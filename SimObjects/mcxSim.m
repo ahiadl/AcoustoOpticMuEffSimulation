@@ -7,6 +7,7 @@ classdef mcxSim <handle
         src
         det
         grid
+        obj
         mesh
         op
         time
@@ -34,7 +35,6 @@ classdef mcxSim <handle
             uVars.halfAngle     = [];  %%
             uVars.lineEndPoint  = [];  %%
             uVars.slitEndPoint  = [];  %%
-            
             
             uVars.patternSizeFactor = 1;
             uVars.patternVec1 = [];
@@ -85,21 +85,29 @@ classdef mcxSim <handle
             
             this.geometry();
             
+            %  ------ Objects (non-homogeneous) ---------
+            this.obj.params = uVars.objParams;
+            this.obj.numOfObjects = length(this.obj.params);
+            
+            for i=1:this.obj.numOfObjects
+                this.addObjectGeometry(i+1, this.obj.params{i});
+            end
+            
             % ------ Source ---------
             this.src.type = uVars.srcType;
             
             this.src.userPos = uVars.srcPos;
-            this.src.pos  = uVars.srcPos - [this.grid.xVec(1), this.grid.yVec(1), this.grid.zVec(1)]/this.grid.res+1;
+            this.src.pos     = (uVars.srcPos - [this.grid.xVec(1), this.grid.yVec(1), this.grid.zVec(1)])/this.grid.res+1;
             
-            this.src.dir  = uVars.srcDir;
-            this.src.pattern = uVars.pattern;
+            this.src.dir        = uVars.srcDir;
+            this.src.pattern    = uVars.pattern;
             this.src.numPattern = size(this.src.pattern,3);
 
             this.src.patternVec1 = uVars.patternVec1;
             this.src.patternVec2 = uVars.patternVec2;
             
-            this.src.plane = uVars.plane;
-            this.src.patternSizeFactor =uVars.patternSizeFactor;
+            this.src.plane             = uVars.plane;
+            this.src.patternSizeFactor = uVars.patternSizeFactor;
             
             this.src.planeSize     = uVars.planeSize;
             this.src.patternWidth  = uVars.patternWidth;
@@ -114,12 +122,9 @@ classdef mcxSim <handle
             this.setSource();
             
             % ------ Detector ---------
-
             this.setDetector();
             
             % ------ Optical Properties ---------
-            this.op.numOfObjects = uVars.numOfObjects; %TODO: maybe should be in geometry?
-            
             % These parameters should be vectors of length uVars.numOfObjects
             this.op.mua = uVars.mua;
             this.op.mus = uVars.mus;
@@ -127,7 +132,7 @@ classdef mcxSim <handle
             this.op.ref = uVars.ref;
             
             this.setOpticalProperties();
-            
+
             % ------ Time ---------
             this.time.tstart = uVars.tstart;
             this.time.tstep  = uVars.tstep;
@@ -138,14 +143,14 @@ classdef mcxSim <handle
             this.setTime();
 
             % ------ Simulation ---------
-            
             this.setSimulation();
+            
         end
         
         function vars = getVars(this)
             vars.grid = this.grid;
-            vars.op = this.op;
-            vars.src = this.src;
+            vars.op   = this.op;
+            vars.src  = this.src;
             vars.time = this.time;
         end
         
@@ -187,6 +192,50 @@ classdef mcxSim <handle
             end
         end
         
+        function addObjectGeometry(this, i, par)
+        %% Parameters:
+            % shape of the object -
+            %   rect - requires a
+            [Y, X, Z] = meshgrid(this.grid.yVec, this.grid.xVec, this.grid.zVec);
+            switch par.shape
+                case 'rect'
+                    mask = X >=  par.bb(1,1) & X <= par.bb(2,1) & Y >= par.bb(1,2) & Y <= par.bb(2,2) & Z >= par.bb(1,3) & Z <= par.bb(2,3); 
+                case 'sphere'
+                    mask = sqrt((X-par.center(1)).^2 + (Y-par.center(2)).^2 + (Z-par.center(3)).^2) <= par.radius;
+                case 'cylinder'
+                    switch par.dir
+                        case 'X'
+                            ax1 = X; ax2 = Y; ax3 = Z;
+                        case 'Y'
+                            ax1 = Y; ax2 = X; ax3 = Z;
+                        case 'Z' 
+                            ax1 = Z; ax2 = X; ax3 = Y;
+                    end
+                    mask = ((ax1 >= par.longLim(1)) & (ax1 <= par.longLim(2))) & (sqrt((ax2-par.center(1)).^2 + (ax3-par.center(2)).^2) <= par.radius);
+                case 'layer'
+                    switch par.dir
+                        case 'X'
+                            mat = X;
+                        case 'Y'
+                            mat = Y;
+                        case 'Z' 
+                            mat = Z;
+                    end
+                    mask = mat >= par.depth;
+                case 'other'
+            end
+%             figure()
+%             hs=slice(this.grid.yVec, this.grid.xVec, this.grid.zVec, double(mask), [0],[7],[0]);
+% %             hs=slice(double(mask), [15],[50],[15]);
+% %             hs=slice(double(mask), [15],[30],[30]);
+% %             hs=slice(double(mask), [30],[30],[30]);
+%             set(hs,'linestyle','none');
+%             axis tight equal
+%             xlabel("Y"); ylabel("X"); zlabel("Z");
+            this.cfg.vol(mask) = i;
+            
+        end
+        
         function setSource(this)
             %% Parameters:
             % cfg.srcpos:     a 1 by 3 vector, the position of the source in grid unit
@@ -202,7 +251,7 @@ classdef mcxSim <handle
             
             this.cfg.srcpos = this.src.pos;
             this.cfg.srcdir = this.src.dir;
-            this.cfg.issrcfrom0=0;
+            this.cfg.issrcfrom0 = 0;
             
             switch this.src.type
                 case 'pencil'
@@ -269,17 +318,21 @@ classdef mcxSim <handle
                                            * this.src.patternSizeFactor / this.grid.res;
                     switch this.src.plane
                         case 'XY'
-                            this.cfg.srcpos    =  [this.src.pos(1:2) -  patternGridLen/2, 0];  
+                            this.cfg.srcpos    = [this.src.pos(1:2) -  patternGridLen/2, 0];  
                             this.cfg.srcparam1 = [patternLen(1), 0, 0,  size(this.src.pattern,1)];
                             this.cfg.srcparam2 = [0, patternLen(2), 0,  size(this.src.pattern,2)];
+                            this.cfg.srcDir  = [0, 0, 1];
                         case 'YZ'
-                            this.cfg.srcpos    = [0, this.src.pos(2:3) - patternGridLen/2];  
+                            this.cfg.srcpos    = [this.src.pos(1), this.src.pos(2:3) - patternGridLen/2];  
                             this.cfg.srcparam1 = [0, patternGridLen(1), 0,  size(this.src.pattern,1)];
                             this.cfg.srcparam2 = [0, 0, patternGridLen(2),  size(this.src.pattern,2)];
+                            
+                            this.cfg.srcDir  = [1, 0, 0];
                         case 'XZ'
                             this.cfg.srcpos    = [this.src.pos(1)- patternGridLen(1)/2, 0, this.src.pos(3) - patternGridLen(2)/2];  
                             this.cfg.srcparam1 = [patternGridLen(1), 0, 0,  size(this.src.pattern,1)];
                             this.cfg.srcparam2 = [0, 0, patternGridLen(2),  size(this.src.pattern,2)];
+                            this.cfg.srcDir  = [0, 1, 0];
                         case 'custom'                            
                             this.cfg.srcparam1=[this.src.planePoint1, size(this.src.pattern,1)]; %srcparam1(1:3)=plane corner, srcparam1(4) pattern Dimension X
                             this.cfg.srcparam2=[this.src.planePoint2, size(this.src.pattern,2)]; %srcparam2(1:3)=plane corner, srcparam2(4) pattern Dimension Y
@@ -357,12 +410,15 @@ classdef mcxSim <handle
             % cfg.isnormalized:[1]-normalize the output fluence to unitary source, 0-no reflection
             % cfg.isspecular: 1-calculate specular reflection if source is outside, [0] no specular reflection
             this.cfg.prop(1,:) = [0 0 1 1];
-            for i=1:this.op.numOfObjects
-                this.cfg.prop(i+1, :) = [this.op.mua(i), this.op.mus(i), this.op.g(i), this.op.ref(i)];
+            this.cfg.prop(2,:) = [this.op.mua, this.op.mus, this.op.g, this.op.ref];
+            for i=1:this.obj.numOfObjects
+                par = this.obj.params{i};
+                this.cfg.prop(i+2, :) = [par.op.mua, par.op.mus, par.op.g, par.op.ref];
             end
             
             this.cfg.isreflect    = 1;
-            this.cfg.isspecular   = 0;
+            this.cfg.isrefint     = 1;  % enable reflection at interior boundary too
+            this.cfg.isspecular   = 1;
             this.cfg.isnormalized = 1;
         end
         
@@ -394,7 +450,7 @@ classdef mcxSim <handle
             this.cfg.tstep  = this.time.tstep;
             this.cfg.tend   = this.time.tend;
         end
-        
+   
         function phi = calcPhi(this)
              %% Output Parameters:
              %  fluence: a struct array, with a length equals to that of cfg. For each element of fluence:

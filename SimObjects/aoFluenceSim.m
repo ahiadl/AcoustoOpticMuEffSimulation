@@ -10,6 +10,7 @@ classdef aoFluenceSim <handle
         data
         vars
         paths
+        figs
     end
     
     methods (Static)
@@ -41,6 +42,10 @@ classdef aoFluenceSim <handle
             uVars.usDir = []; % [1/-1]
             uVars.usFocalDist = []; %distance of the US focus from illumination plane
             uVars.usDataType  = [];
+            
+            uVars.savePath = '.';
+            uVars.saveFlag = false;
+            uVars.simName = '';
         end
     end
     
@@ -55,6 +60,7 @@ classdef aoFluenceSim <handle
             this.paths.curDetPath = '';
             this.paths.curUSPath = '';
             
+            this.vars.table.varNames = ["Sample No. [#]"; "Sim. MuEff [1/mm]"; "Calc. Gradient"; "Calc. MuEff[1/mm]"];
         end
         
         function setVars(this, uVars)
@@ -78,6 +84,10 @@ classdef aoFluenceSim <handle
             
             this.vars.geometry = uVars.geometry;
             this.vars.srcParam = uVars.srcParam;
+            
+            this.vars.save.path = uVars.savePath;
+            this.vars.save.flag = uVars.saveFlag;
+            this.vars.save.simName = uVars.simName;
             
             phiSimVars = fluenceSim.createUserVars();
             
@@ -106,7 +116,7 @@ classdef aoFluenceSim <handle
             fprintf("AOSim: Setting vars to fluence Sim\n");
             this.fs.setVars(phiSimVars)
             this.fs.config();
-            this.vars.fs = this.fs.getVars();
+            this.vars.fluence = this.fs.getVars();
 
             this.loadDB();
             
@@ -116,10 +126,9 @@ classdef aoFluenceSim <handle
             uVarsCnv.usAx = uVars.usAx;
             uVarsCnv.usDir = uVars.usDir;
             uVarsCnv.usFocalDist = uVars.usFocalDist;
-            uVarsCnv.xVecGrid = this.vars.fs.xVec;
-            uVarsCnv.yVecGrid = this.vars.fs.yVec;
-            uVarsCnv.zVecGrid = this.vars.fs.zVec;
-            
+            uVarsCnv.xVecGrid = this.vars.fluence.xVec;
+            uVarsCnv.yVecGrid = this.vars.fluence.yVec;
+            uVarsCnv.zVecGrid = this.vars.fluence.zVec;
             
             fprintf("AOSim: Setting vars to Convolution Sim\n");
             this.cnv.setVars(uVarsCnv);
@@ -129,27 +138,8 @@ classdef aoFluenceSim <handle
             this.calcVarsForPP()
         end
         
-        function calcVarsForPP(this)
-            this.vars.pp.endX = length(this.vars.fs.xVec);
-            this.vars.pp.endY = length(this.vars.fs.yVec);
-            this.vars.pp.endZ = length(this.vars.fs.zVec);
-
-            this.vars.pp.midX = ceil(this.vars.pp.endX /2);
-            this.vars.pp.midY = ceil(this.vars.pp.endX /2);
-            this.vars.pp.midZ = ceil(this.vars.pp.endX /2);
-            
-            this.vars.pp.midYConv = ceil(this.vars.cnv.tr1Size/2);
-            this.vars.pp.midZConv = ceil(this.vars.cnv.tr2Size/2);
-            
-            this.vars.pp.xVecCnv = this.vars.cnv.axVecConv;
-        end
-        
-        function postProcessing(this)
-            this.data.midSrc = log(normMatf(this.data.phiSrc(:, this.vars.pp.midY, this.vars.pp.midZ)));
-            this.data.midDet = log(normMatf(this.data.phiDet(:, this.vars.pp.midY, this.vars.pp.midZ)));
-            this.data.midLight = log(normMatf(this.data.phiLight(:, this.vars.pp.midY, this.vars.pp.midZ)));
-            
-            this.data.midConv = log(normMatf(squeeze(this.data.phiAO(this.vars.pp.midYConv, this.vars.pp.midZConv, :))));
+        function vars = getVars(this)
+           vars = this.vars;
         end
         
         function loadDB(this)               
@@ -175,19 +165,58 @@ classdef aoFluenceSim <handle
             this.ia.flush();
             
             % Ultrasound
-%             if ~strcmp(this.paths.curUSPath, this.paths.usPath)
-                fprintf("AOSim: Loading US Data\n");
-                uVarsUS = usAnalysis.createUserVars();
-                uVarsUS.usDataPath = this.paths.usPath;
-                uVarsUS.usDataType = this.vars.usDataType;
-                uVarsUS.intFactor = [1,1,1];
-                this.usa.setVars(uVarsUS)
-                [this.data.usData,  this.vars.us] = this.usa.analyse();
-                this.cnv.setUSData(this.data.usData, this.vars.us);
-                this.paths.curUSPath = this.paths.usPath;
-%             end
+            fprintf("AOSim: Loading US Data\n");
+            uVarsUS = usAnalysis.createUserVars();
+            uVarsUS.usDataPath = this.paths.usPath;
+            uVarsUS.usDataType = this.vars.usDataType;
+            uVarsUS.intFactor = [1,1,1];
+            this.usa.setVars(uVarsUS)
+            [this.data.usData,  this.vars.us] = this.usa.analyse();
+            this.cnv.setUSData(this.data.usData, this.vars.us);
+            this.paths.curUSPath = this.paths.usPath;
         end
         
+        function calcVarsForPP(this)
+            this.vars.pp.endX = length(this.vars.fluence.xVec);
+            this.vars.pp.endY = length(this.vars.fluence.yVec);
+            this.vars.pp.endZ = length(this.vars.fluence.zVec);
+
+            this.vars.pp.midX = ceil(this.vars.pp.endX /2);
+            this.vars.pp.midY = ceil(this.vars.pp.endX /2);
+            this.vars.pp.midZ = ceil(this.vars.pp.endX /2);
+            
+            this.vars.pp.midYConv = ceil(this.vars.cnv.tr1Size/2);
+            this.vars.pp.midZConv = ceil(this.vars.cnv.tr2Size/2);
+            
+            this.vars.pp.xVecCnv = this.vars.cnv.axVecConv;
+            this.vars.pp.dAx = this.vars.us.dAx;
+            
+            this.vars.pp.startMuEffIdx = find(this.vars.pp.xVecCnv == 0) + 5;
+            this.vars.pp.endMuEffIdx   = this.vars.pp.startMuEffIdx + 20;
+            
+            % Accordin to: "Biomedical Optics Principle and Imaging",
+            % L.V.Wang, 2008, pages 98-99 (108-109).
+            
+            this.vars.pp.simMuEff = sqrt(3*this.vars.muaVec .* (this.vars.muaVec + this.vars.phiSimVars.mus*(1-this.vars.phiSimVars.g) ) );
+
+        end
+        
+        function postProcessing(this)
+            i = this.vars.curSimIdx;
+            this.data.midSrc(i,:)   = log(normMatf(this.data.phiSrc{i}(:, this.vars.pp.midY, this.vars.pp.midZ)));
+            this.data.midDet(i,:)   = log(normMatf(this.data.phiDet{i}(:, this.vars.pp.midY, this.vars.pp.midZ)));
+            this.data.midLight(i,:) = log(normMatf(this.data.phiLight{i}(:, this.vars.pp.midY, this.vars.pp.midZ)));
+            
+            this.data.midConv(i,:)  = log(normMatf(squeeze(this.data.phiAO{i}(this.vars.pp.midYConv, this.vars.pp.midZConv, :))));
+            
+            startIdx  = this.vars.pp.startMuEffIdx;
+            endIdx = this.vars.pp.endMuEffIdx;
+            
+%             this.data.finalMuEff(i) = (this.data.midConv(i,startIdx) - this.data.midConv(i,endIdx))/ (this.vars.pp.xVecCnv(startIdx) - this.vars.pp.xVecCnv(endIdx));
+            this.data.grad(i) = abs(mean(gradient(this.data.midConv(i,startIdx:endIdx))));
+            this.data.calcMuEff(i) = this.data.grad(i) / this.vars.pp.dAx /2;
+        end
+
         function loadPhi(this)
             
         end
@@ -249,8 +278,8 @@ classdef aoFluenceSim <handle
                     
                     this.fs.setVars(phiSimVars)
                     this.fs.config();
-                    [this.data.phiSrc, this.data.srcVars] = this.fs.simulate();
-                    this.savePhi("Src", i);
+                    [this.data.phiSrc{i}, this.data.srcVars] = this.fs.simulate();
+%                     this.savePhi("Src", i);
                     
                     %Det:
                     phiSimVars.pattern = this.data.detPattern;
@@ -259,13 +288,15 @@ classdef aoFluenceSim <handle
                     
                     this.fs.setVars(phiSimVars)
                     this.fs.config();
-                    [this.data.phiDet, this.data.detVars] = this.fs.simulate();
-                    this.savePhi("Det", i);
+                    [this.data.phiDet{i}, this.data.detVars] = this.fs.simulate();
+%                     this.savePhi("Det", i);
             end          
         end
         
         function simAndAnalyse(this)
+            this.initPlots();
             for i=1:this.vars.numOfPhantoms
+                this.vars.curSimIdx = i;
                 if this.vars.loadPhi
                     
                     this.loadPhi(i);
@@ -274,69 +305,59 @@ classdef aoFluenceSim <handle
                     this.calcFluence(i);
                 end
                 
-                this.data.phiLight = this.data.phiSrc.*this.data.phiDet;
+                this.data.phiLight{i} = this.data.phiSrc{i}.*this.data.phiDet{i};
                 fprintf("AOSim: Convolving \n");
-                this.data.phiAO = this.cnv.calcConv(this.data.phiLight, this.data.srcVars);
+                this.data.phiAO{i} = this.cnv.calcConv(this.data.phiLight{i}, this.data.srcVars);
                 this.postProcessing()
-                this.saveAOSim(i)
                 this.plotCurrentSim()
             end
+           
+            this.vars.table.T = table((1:this.vars.numOfPhantoms)', this.vars.pp.simMuEff', this.data.grad', this.data.calcMuEff', 'VariableNames', this.vars.table.varNames);
+            display(this.vars.table.T);
+            
+            if this.vars.save.flag
+                this.saveAOSim()
+            end
+        end
+        
+        function initPlots(this)
+            cols = 3;
+            rows = ceil(length(this.vars.muaVec)/cols);
+            
+            this.figs.hFig = figure();
+            
+            for i = 1:length(this.vars.muaVec)
+                this.figs.ax(i) = subplot(rows, cols, i);
+            end
+            
+            
         end
         
         function plotCurrentSim(this)
             switch this.vars.geometry
                 case 'TwoFibers'
                 case {'Measured', 'Uniform', 'UniformInf', 'Point'}
-                    figure()
-                    subplot(3,3,1)
-                    imagesc(this.data.srcVars.yVec, this.data.srcVars.xVec, log(squeeze(this.data.phiSrc(:,:,this.vars.pp.midZ))))
-                    xlabel( 'Y [mm]' )
-                    ylabel( 'X [mm]' )
-                    axis tight equal
-      
-                    subplot(3,3,2)
-                    imagesc(this.data.detVars.yVec, this.data.detVars.xVec, log(squeeze(this.data.phiDet(:,:,this.vars.pp.midZ))))
-                    xlabel( 'Y [mm]' )
-                    ylabel( 'X [mm]' )
-                    axis tight equal
-     
-                    subplot(3,3,3)
-                    imagesc(this.data.srcVars.yVec, this.data.srcVars.xVec, log(squeeze(this.data.phiLight(:,:,this.vars.pp.midZ))))
-                    xlabel( 'Y [mm]' )
-                    ylabel( 'X [mm]' )
-                    axis tight equal
-
-                    subplot(3,3,7)
-                    plot(this.data.srcVars.xVec, this.data.midSrc); hold on
-                    plot(this.data.srcVars.xVec, this.data.midDet);
-                    plot(this.data.srcVars.xVec, this.data.midLight);
-                    plot(this.vars.pp.xVecCnv, this.data.midConv);
-                    xlabel('X[mm]')
-                    ylabel('Phi[mm]')
-                    legend('Src', 'Det', 'Light');
-                    
-%                     subplot(3,3,4)
-%                     hs=slice(log(squeeze(this.data.phiSrc)), [1,midX,endX],[1, midY, endY],[1,midZ endZ]);
-%                     set(hs,'linestyle','none');
-%                     axis tight equal
-%                     subplot(3,3,5)
-%                     hs=slice(log(squeeze(this.data.phiDet)), [1,midX,endX],[1, midY, endY],[1,midZ endZ]);
-%                     set(hs,'linestyle','none');
-%                     axis tight equal
-%                     subplot(3,3,6)
-%                     hs=slice(log(squeeze(this.data.phiSrc)), [1,midX,endX],[1, midY, endY],[1,midZ endZ]);
-%                     set(hs,'linestyle','none');
-%                     axis tight equal
-                
+                    i = this.vars.curSimIdx;
+                    hold(this.figs.ax(i), 'on');
+                    this.figs.plt(i,1) = plot(this.figs.ax(i), this.data.srcVars.xVec, this.data.midSrc(i,:));
+                    this.figs.plt(i,2) = plot(this.figs.ax(i), this.data.srcVars.xVec, this.data.midDet(i,:));
+                    this.figs.plt(i,3) = plot(this.figs.ax(i), this.data.srcVars.xVec, this.data.midLight(i,:));
+                    this.figs.plt(i,4) = plot(this.figs.ax(i), this.vars.pp.xVecCnv,   this.data.midConv(i,:));
+                    hX = xlabel(this.figs.ax(i), 'X[mm]');
+                    hY = ylabel(this.figs.ax(i), 'Phi[mm]');
+                    hLeg = legend(this.figs.ax(i), 'Src', 'Det', 'Light', 'Conv'); 
+                    set(hLeg, 'Location', 'southwest');
+                    hold(this.figs.ax(i), 'off');
             end
         end
         
-        function savePhi(this, name, idx)
-            
-        end
-        
-        function saveAOSim(this, idx)
-            
+        function saveAOSim(this)
+            simVars = this.getVars();
+            simData = this.data;
+            simData.usData = simData.usData.pulses;
+            timeStamp = strrep(datestr(datetime('now')),':','-');
+            filename = sprintf("%s/%s-%s.mat", this.vars.save.path, timeStamp, this.vars.save.simName);
+            save(filename, 'simData', 'simVars', '-v7.3');
         end
     end
 end

@@ -8,14 +8,20 @@ usa = usAnalysis();
 %% 3D
 uVars = usa.createUserVars();
 
-uVars.usDataPath = '..\AOTransducer\AO_Transducer.mat';
+uVars.usDataPath = 'AO_Transducer.mat';
 uVars.usDataType = '3D';
+uVars.intFactor = [1,1,1];
 usa.setVars(uVars);
 res = usa.analyse();
 %%
 close all
-usa.displayResults()
-
+% usa.cutFocalData();
+usa.interpolateFocalEnvelopes();
+% usa.createSpatialData();
+% usa.calcPulseWidth();
+% usa.cutPulses();
+% close all;
+% usa.displayResults();
 
 %% slice
 
