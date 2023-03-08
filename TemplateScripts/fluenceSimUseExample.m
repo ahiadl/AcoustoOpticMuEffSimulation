@@ -5,11 +5,11 @@ clc;
 ia = illuminationAnalysis();
 [pattern, vars]=ia.analyse("31-Oct-2022 12-39-50-Illumination-NoPDMS.mat");
 
-fs = fluenceSim('mcx');
-
+fs = fluenceSim('MCX');
+%%
+clc; close all;
 uVarsFS = fs.createUserVars();
 
-uVarsFS.simulator = 'mcx'; % 'mcx', 'toast'
 uVarsFS.mode      = 'Measured'; % twoFibers; Uniform; Measured
 uVarsFS.meshMode  = 'slab'; % mcxOnly: 'slab', 'semiInf'
 uVarsFS.meshSize  = [60,60,60]; % lenX, lenY, lenZ
@@ -20,9 +20,9 @@ uVarsFS.intFactor = 1; %
 uVarsFS.srcDir    = [1,0,0]; % direction, as a normalized vector
 
 uVarsFS.mua = [0.0001]; %
-uVarsFS.mus = [26.66]; %
-uVarsFS.g   = [0.8]; %
-uVarsFS.ref = [1.34]; %
+uVarsFS.mus = [26.66];  %
+uVarsFS.g   = [0.8];    %
+uVarsFS.ref = [1.34];   %
 
 uVarsFS.loadPattern = false;
 
@@ -33,6 +33,8 @@ uVarsFS.patternVec2 = vars.disc1Vec - min(vars.disc1Vec);
 uVarsFS.nphoton = 1e7;
 
 uVarsFS.plane = 'YZ';
+
+uVarsFS.objParams = [];
 
 fs.setVars(uVarsFS);
 fs.config();

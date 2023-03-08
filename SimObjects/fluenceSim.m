@@ -1,12 +1,10 @@
 classdef fluenceSim < handle
-    %FLUENCESIM Summary of this class goes here
-    %   Detailed explanation goes here
-    % illumination is always from YZ plane and towards X direction
+    % Simulates fluence based on MCX/Toast++ tools.
+    % Illumination is always from YZ plane and towards X direction
     
     properties
         ia
-        simMCX
-        simToast
+        sim
         vars
         data
     end
@@ -37,18 +35,25 @@ classdef fluenceSim < handle
             uVars.nphoton = [];
             
             uVars.plane = [];
+
+            uVars.objParams = [];
         end
     end
     
     methods
-        function this = fluenceSim()
+        function this = fluenceSim(type)
             this.ia  = illuminationAnalysis();
-            this.simMCX = mcxSim();
-            this.simToast = toastppSim();
+            this.vars.simulator = type;
+            switch type
+                case 'MCX'
+                    this.sim = mcxSim();
+                    
+                case 'Taost++'
+                    this.sim = toastppSim();
+            end
         end
         
         function setVars(this, uVars)
-            this.vars.simulator = uVars.simulator;
             this.vars.mode      = uVars.mode;     % twoFibers; Uniform; Measured
             this.vars.meshMode  = uVars.meshMode; % mcxOnly: 'slab', 'semiInf'
             this.vars.meshSize  = uVars.meshSize; % [lenX, lenY, lenZ]
@@ -66,6 +71,8 @@ classdef fluenceSim < handle
             this.vars.ref  = uVars.ref;
             
             this.vars.loadPattern = uVars.loadPattern;
+
+            this.vars.objParams = uVars.objParams;
             
             if strcmp(this.vars.mode, 'Measured')
                 if this.vars.loadPattern
@@ -78,42 +85,41 @@ classdef fluenceSim < handle
             end
             
             if strcmp(this.vars.mode, 'Uniform') || strcmp(this.vars.mode, 'Measured')
-               this.vars.plane = uVars.plane; 
+               this.vars.plane = uVars.plane;
             end
             
             
             %MCX Only:
             this.vars.nphoton = uVars.nphoton;
-            
         end
         
         function config(this)
+           uVarsSim = this.sim.createUserVars();
+
            switch this.vars.simulator
-                case 'mcx'
-                    uVarsMcx = this.simMCX.createUserVars();
-                    
+                case 'MCX'
                     this.vars.xLims =  [0,this.vars.meshSize(2)];
                     this.vars.yLims = [-this.vars.meshSize(2)/2,  this.vars.meshSize(2)/2];
                     this.vars.zLims = [-this.vars.meshSize(3)/2,  this.vars.meshSize(3)/2];
                     
-                    uVarsMcx.xLims = this.vars.xLims;
-                    uVarsMcx.yLims = this.vars.yLims;
-                    uVarsMcx.zLims = this.vars.zLims;
+                    uVarsSim.xLims = this.vars.xLims;
+                    uVarsSim.yLims = this.vars.yLims;
+                    uVarsSim.zLims = this.vars.zLims;
 
-                    uVarsMcx.res       = this.vars.meshRes;
-                    uVarsMcx.intFactor = this.vars.intFactor;
+                    uVarsSim.res       = this.vars.meshRes;
+                    uVarsSim.intFactor = this.vars.intFactor;
                     
                     switch this.vars.mode
                         case 'pointSrc'
-                            uVarsMcx.srcType = 'pencil';                           
+                            uVarsSim.srcType = 'pencil';                           
                         case 'Uniform'
-                            uVarsMcx.srcType = 'Planar';
-                            uVarsMcx.planePoint1   = [61, 0, 0];
-                            uVarsMcx.planePoint2   = [0, 61, 0];
-                            uVarsMcx.plane   = this.vars.plane;
+                            uVarsSim.srcType = 'Planar';
+                            uVarsSim.planePoint1   = [61, 0, 0];
+                            uVarsSim.planePoint2   = [0, 61, 0];
+                            uVarsSim.plane   = this.vars.plane;
                         case 'Measured'
-                            uVarsMcx.srcType = 'pattern';
-                            uVarsMcx.plane   = this.vars.plane;
+                            uVarsSim.srcType = 'pattern';
+                            uVarsSim.plane   = this.vars.plane;
                             if this.vars.loadPattern
                                [ptrn, ptrnVars] = this.ia.analyse(this.vars.patternPath);
                                this.vars.pattern  = ptrn.mask;
@@ -121,45 +127,47 @@ classdef fluenceSim < handle
                                this.vars.patternVec2 = ptrnVars.disc1Vec - min(ptrnVars.disc1Vec);
                             end
                             
-                            uVarsMcx.pattern =  this.vars.pattern;
-                            uVarsMcx.patternVec1 = this.vars.patternVec1;
-                            uVarsMcx.patternVec2 = this.vars.patternVec2;
-                            uVarsMcx.plane   = this.vars.plane;
+                            uVarsSim.pattern =  this.vars.pattern;
+                            uVarsSim.patternVec1 = this.vars.patternVec1;
+                            uVarsSim.patternVec2 = this.vars.patternVec2;
+                            uVarsSim.plane   = this.vars.plane;
                         case 'other'
                         otherwise
                             error("Invalid source type.\n");
                     end
                     
                     %Static src configurations:
-                    uVarsMcx.srcPos  = [0,0,0];
-                    uVarsMcx.srcDir  = [1 0 0]; 
+                    uVarsSim.srcPos  = [0,0,0];
+                    uVarsSim.srcDir  = [1 0 0]; 
 
                     % Optical Properties:
-                    uVarsMcx.mua = this.vars.mua;
-                    uVarsMcx.mus = this.vars.mus;
-                    uVarsMcx.g   = this.vars.g;
-                    uVarsMcx.ref = this.vars.ref;
+                    uVarsSim.mua = this.vars.mua;
+                    uVarsSim.mus = this.vars.mus;
+                    uVarsSim.g   = this.vars.g;
+                    uVarsSim.ref = this.vars.ref;
 
                     % Static configurations:
-                    uVarsMcx.numOfObjects = 1;
-                    uVarsMcx.cw = true;
-                    uVarsMcx.tStart = 0;
-                    uVarsMcx.tstep  = 1e-10;
-                    uVarsMcx.tend   = 5e-9;
+                    uVarsSim.numOfObjects = 1;
+                    uVarsSim.cw = true;
+                    uVarsSim.tStart = 0;
+                    uVarsSim.tstep  = 1e-10;
+                    uVarsSim.tend   = 5e-9;
             
-                    uVarsMcx.nphoton = this.vars.nphoton; 
+                    uVarsSim.nphoton = this.vars.nphoton; 
                     
-                    this.simMCX.setVars(uVarsMcx);
-                    
-                    this.vars.varsSim = this.simMCX.getVars();
-                    
-                    this.vars.xVec = this.vars.varsSim.grid.xVec;
-                    this.vars.yVec = this.vars.varsSim.grid.yVec;
-                    this.vars.zVec = this.vars.varsSim.grid.zVec;
+                    uVarsSim.objParams = this.vars.objParams;
+
                 case 'toast'
-                    
-                    
+                    % TODO: Implement Support.
            end
+            
+            this.sim.setVars(uVarsSim);
+                    
+            this.vars.varsSim = this.sim.getVars();
+            
+            this.vars.xVec = this.vars.varsSim.grid.xVec;
+            this.vars.yVec = this.vars.varsSim.grid.yVec;
+            this.vars.zVec = this.vars.varsSim.grid.zVec;
         end
         
         function vars = getVars(this)
@@ -168,12 +176,15 @@ classdef fluenceSim < handle
         
         function [res,vars] = simulate(this)
             vars = this.vars;
-            switch this.vars.simulator
-                case 'mcx'
-                    res = this.simMCX.calcPhi();
-                case 'toast'
 
-            end
+            res = this.sim.calcPhi();
+
+%             switch this.vars.simulator
+%                 case 'mcx'
+%                     
+%                 case 'toast'
+% 
+%             end
         end
     end
 end

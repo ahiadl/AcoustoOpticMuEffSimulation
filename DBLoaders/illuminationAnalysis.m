@@ -39,35 +39,34 @@ classdef illuminationAnalysis<handle
         function processing(this)
             this.data.maskRaw  = normMatf(mean(this.data.raw, 5));
             mask2 = normMatf(this.data.maskRaw - mean(this.data.maskRaw, 1));
-            mask3 = normMatf(mask2 - mean(mask2([1:6, 57:60], :), 1));
+            mask3 = normMatf(mask2 - mean(mask2(1:6, :), 1));
             this.data.mask =  mask3.*(mask3>0.1);
             
             this.data.ax1 = this.vars.axDisc1;
             this.data.ax2 = this.vars.axScan;
-            
-%             this.plotResults();
+
         end
         
         function plotResults(this)
+            ax1 = this.vars.disc1Vec - mean(this.vars.disc1Vec);
+            ax2 = this.vars.scanVec - mean(this.vars.scanVec);
+
             figure();
-            imagesc(this.vars.disc1Vec, this.vars.scanVec, this.data.mask)
+            subplot(1,2,1)
+            imagesc(ax1, ax2, this.data.mask)
             xlabel(sprintf("%s[mm]", this.vars.axDisc1))
             ylabel(sprintf("%s[mm]", this.vars.axScan))
-            colorbar
+            h = colorbar;
+            ylabel(h, "Linear[AU]")
             axis tight equal
-            
-%             idx1 = floor(this.vars.scanSizeBin(1)/2);
-%             idx2 = floor(this.vars.scanSizeBin(2)/2);
-%             
-%             figure();
-%             subplot(1,2,1)
-%             plot(this.vars.disc1Vec, this.data.mask(idx1,:))
-%             xlabel(sprintf("%s[mm]", this.vars.axDisc1))
-%             ylabel("Illumination [AU]");
-%             subplot(1,2,2)
-%             plot(this.vars.scanVec, this.data.mask(:,idx2))
-%             xlabel(sprintf("%s[mm]", this.vars.axScan))
-%             ylabel("Illumination [AU]");
+            subplot(1,2,2)
+            imagesc(ax1, ax2, db(this.data.mask))
+            xlabel(sprintf("%s[mm]", this.vars.axDisc1))
+            ylabel(sprintf("%s[mm]", this.vars.axScan))
+            h = colorbar;
+            ylabel(h, "dB");
+            axis tight equal
+
         end
         
         function flush(this)

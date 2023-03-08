@@ -1,4 +1,4 @@
- classdef virtualAOSim < handle
+classdef virtualAOSim < handle
     %CREATEVIRTUALAOSIGNAL Summary of this class goes here
     %   Detailed explanation goes here
     
@@ -15,10 +15,13 @@
         us;
         profiles;
         spatMat;
-        pulses;
         vars;
+        pulse;
+
+        pulses;
         phiMath;
         
+        res;
         figs;
     end
     
@@ -35,7 +38,9 @@
             uVars.spacerLen      = 6.4;
             uVars.spacerMaterial = 'PDMS';
             
-            uVars.usFocalPointDistFromInterface = 30; %[mm]
+            uVars.usDistFromInt = 30; %[mm]
+            
+            uVars.useCustomUSParams = false;
             
             uVars.muEffVec = [0.074; 0.106; 0.152; 0.219; 0.323];
         end
@@ -49,44 +54,43 @@
             this.displayDebug = false;
             this.debugTime    = false;
         end
-        
-        function loadFullUSPulse(this)
-            fprintf("VAOS: Loading and Analyzing US Field - take a coffee break\n");
-            this.usa = usAnalysis();
-
-            uVars.usDataPath = 'AO_Transducer.mat';
-            uVars.usDataType = '3D';
-            uVars.intFactor = [1,1,1];
-            this.usa.setVars(uVars);
-            res = this.usa.analyse();
-            usVars = this.usa.getVars();
-            this.usVars.raw = usVars; %#ok<*PROP>
-            % usa.cutPulses()
-            % usa.calcPulsesProfile();
-            % usa.extractFocalSignal();
-
-            resSave.focalProfile      = res.focalProfile;
-            resSave.focalPulsesEnvCut = res.focalPulsesEnvCut;
-            resSave.focalSig          = res.focalSig;
-            resSave.focalSigEnv       = res.focalSigEnv;
-            resSave.focalPulseRawAx   = this.usVars.depthVec;
             
-            this.us = resSave;
-            save("C:\Users\sahiadl.EED\OneDrive - Technion\Graduate\Simulations\AcoustoOpticMuEffSimulation\analysedFocusedUS.mat", 'resSave', 'usVars', '-v7.3');
+        %% Variables Management Function:
+        function uploadUS(this, input)
+            fprintf("VAOS: Loading US Field\n");
+            if isstring(input) || ischar(input)
+                resUS = load(input);
+            elseif isstruct (input)
+                resUS = input;
+            else
+                fprintf("VAOS: Unkown US data type.\n");
+                return;
+            end
+            
+            this.us.usTransAmpMat = resUS.data.int.trP2pNorm;
+            this.us.depthProfile  = resUS.data.int.depthProfNorm;
+            
+            this.usVars.axialVec      = resUS.grid.int.axialVec;
+            this.usVars.tr1Vec        = resUS.grid.int.tr1Vec;
+            this.usVars.tr2Vec        = resUS.grid.int.tr2Vec;
+            this.usVars.axialFocalIdx = resUS.grid.int.axialFocalIdx;
+            this.usVars.tr1FocalIdx   = resUS.grid.int.tr1FocalIdx;
+            this.usVars.tr2FocalIdx   = resUS.grid.int.tr2FocalIdx;
+            this.usVars.dX            = resUS.grid.int.dAx;
+            this.usVars.dtr1          = resUS.grid.int.dtr1;
+            this.usVars.dtr2          = resUS.grid.int.dtr2;
+
+            this.us.pulseEnv    = resUS.data.pulses.focalPulseEnvNorm;
+            this.us.pulseSig    = resUS.data.pulses.focalPulseNorm;
+            this.usVars.pulseAx = resUS.grid.pulses.axialVec;
+
+            this.usVars.usFocalLen = resUS.usStats.focalLen;
+            this.usVars.c          = resUS.usStats.c;
+            
+            this.vars.tVec = resUS.grid.tVec;
+            this.vars.dt   = resUS.grid.dt;
         end
         
-        function loadUSPulse(this)
-            fprintf("VAOS: Loading US Field\n");
-            if this.fullLoad
-                this.loadFullUSPulse();
-            else
-                res = load("C:\Users\sahiadl.EED\OneDrive - Technion\Graduate\Simulations\AcoustoOpticMuEffSimulation\analysedFocusedUS.mat");
-                this.usVars.raw = res.usVars;
-                this.us         = res.resSave;
-                this.us.focalProfileMat = this.us.focalProfile;
-            end            
-        end
-
         function setVars(this, uVars)
             fprintf("VAOS: Set User Vars\n");
             this.debug = uVars.debug;
@@ -98,57 +102,60 @@
             this.vars.pulseType = uVars.pulseType;
             this.vars.spacerLen = uVars.spacerLen;
             this.vars.spacerMaterial = uVars.spacerMaterial;
-            this.vars.usFocalPointDistFromInterface = uVars.usFocalPointDistFromInterface; %[mm]
+            this.vars.usDistFromInt = uVars.usDistFromInt; %[mm] - US Focal point distance from Spacer-Phantom Interface
             
             this.vars.muEffVec = uVars.muEffVec;
             this.vars.numMu = length(this.vars.muEffVec);
+        
+            this.vars.useCustomUSParams = uVars.useCustomUSParams;
+
+            this.setSpeckleVars(uVars.speckle);
+
+            this.calcSimDimAndSpace();
+            this.alignAndInterpUS();
+            this.createAcousticInterface();
+            this.createPulses();
         end
         
+        function setSpeckleVars(this, uVars)
+            this.vars.speckle.framesPerSig = uVars.framesPerSig;
+            this.vars.speckle.sqncPerFrame = uVars.sqncPerFrame;
+            this.vars.speckle.batchSize    = uVars.batchSize;  
+            this.vars.speckle.n            = uVars.n;
+            this.vars.speckle.lambda       = uVars.lambda;
+            this.vars.speckle.gamma        = uVars.gamma;
+            this.vars.speckle.numOfGrain   = uVars.numOfGrain;
+            this.vars.speckle.SBR          = uVars.SBR;
+        end
+
         function simVars = getVars(this)
            simVars = this.vars; 
         end
         
-        function extractUSVars(this)
-            fprintf("VAOS: Extracting US Profile and Variables\n");
-            this.us.focalProfile     = squeeze(this.us.focalProfileMat(9,9,:));
-            this.us.focalProfileNorm = this.us.focalProfile/max(this.us.focalProfile);
-            this.us.depthProfile     = envelope(this.us.focalProfile, 25, 'peaks');
-            [~, this.usVars.profileFocalPointIdx] = max(this.us.depthProfile);
-            this.us.depthProfileNorm = this.us.depthProfile/max(this.us.depthProfile);
-
-            this.us.pulse = squeeze(this.us.focalPulsesEnvCut(9,9, this.usVars.raw.focalIndIntAx,:))';
-            this.us.pulseNorm = normMatf(this.us.pulse);
-            this.usVars.pulseAx = this.usVars.raw.pulseVec;
-
-            this.us.focalPulseSig = flip(this.us.focalSig(649:649+149-1));
-            this.us.focalPulseSigNorm = this.us.focalPulseSig/max(this.us.focalPulseSig);
-
-            this.usVars.profileDepthVecRaw = this.usVars.raw.pulseStartPosVec;
-            this.usVars.usFocalLen = this.usVars.profileDepthVecRaw(this.usVars.profileFocalPointIdx);
-            
-            this.usVars.c  = round(this.usVars.raw.c);
-            this.usVars.dX = this.usVars.raw.dAx;
-            
-            this.vars.tVec = this.usVars.raw.tVec;
-            this.vars.dt   = this.vars.tVec(2) - this.vars.tVec(1);
+        %% Config Functions:
+        function config(this)
+            this.buildSPMatrix();
+%             this.buildHadMatrix();
+%             this.buildHadInvMat();
         end
-        
-        function useCustomUSParams(this, use)
-            if use
-                this.vars.us.c = 1600;
+
+        function calcSimDimAndSpace(this)
+            fprintf("VAOS: Calculating Dimensions and Creating Space\n");
+            
+            %% Chossing US Params Source
+            if this.vars.useCustomUSParams
+                this.vars.us.c = 1400;
                 this.vars.dX   = this.vars.dt*this.vars.us.c*1e3;
-                this.vars.us.profileDepthVecRaw = this.usVars.profileDepthVecRaw(1) + this.vars.dX*(0:1:length(this.usVars.profileDepthVecRaw) ) ;
-                this.vars.us.usFocalLen = this.vars.us.profileDepthVecRaw(this.usVars.profileFocalPointIdx);
+                this.vars.us.usDepthVecRaw = this.usVars.axialVec(1) + this.vars.dX*(0:1:length(this.usVars.axialVec) );
+                this.vars.us.usFocalLen    = this.vars.us.usDepthVecRaw(this.usVars.axialFocalIdx);
             else
                 this.vars.us.c = this.usVars.c;
                 this.vars.dX   = this.usVars.dX;
-                this.vars.us.profileDepthVecRaw = this.usVars.profileDepthVecRaw;
-                this.vars.us.usFocalLen         = this.usVars.usFocalLen;
+                this.vars.us.usDepthVecRaw = this.usVars.axialVec;
+                this.vars.us.usFocalLen    = this.usVars.usFocalLen;
             end
-        end
-        
-        function calcSimDimension(this)
-            fprintf("VAOS: Calculating Simulation Dimensions\n");
+            
+            %% Calculating Simulation Dimensions:
             this.vars.singleCycleLen    = (1/this.vars.fUS)*this.vars.us.c*1e3;
             this.vars.singleCycleIdxRaw = this.vars.singleCycleLen/this.vars.dX;
             this.vars.singleCycleIdx    = round(this.vars.singleCycleIdxRaw);
@@ -160,16 +167,14 @@
             end
             
             this.vars.reconSize = this.vars.N*this.vars.sqncCompSpac;
-        end
-        
-        function createSpace(this)
+
             fprintf("VAOS: Creating Spatial Vars:\n");
             dX = this.vars.dX;
             reconSize = this.vars.reconSize;
             
             % Creating system axis:
             xRaw = (0:1:reconSize-1)*dX;
-            x = xRaw - (this.vars.us.usFocalLen + this.vars.usFocalPointDistFromInterface); % mm
+            x = xRaw - (this.vars.us.usFocalLen + this.vars.usDistFromInt); % mm
             x = xRaw - mean(xRaw); % mm
             [~, minIdx] = min(abs(x));
             x = x - x(minIdx); % to ensure '0' exist on the grid.
@@ -206,7 +211,7 @@
             spacerIdxStart = spacerIdx(1);
             spacerIdxEnd   = spacerIdx(end);
             
-            spacerAirInt   = floor(spacerLenIdx/2) + spacerIdxStart;
+            spacerAirInt = floor(spacerLenIdx/2) + spacerIdxStart;
             spacerIncIdx = spacerIdxStart:(spacerAirInt-1);
             spacerRedIdx = spacerAirInt:spacerIdxEnd;
             
@@ -222,7 +227,7 @@
             refXEnd   = x(refIdxEnd);
             refX      = x(refIdxStart : refIdxEnd);
             
-            % Collect parameters:
+            %% Collect parameters:
             this.vars.x = x;
             this.vars.space.xOriginIdx = xOriginIdx;
             
@@ -254,40 +259,14 @@
             this.vars.space.refX        = refX;
         end
             
-        function createMathematicalFluence(this)
-            fprintf("VAOS: Creating Mathematical Fluence Profile\n");
-            incX = this.vars.space.incX;
-            refX = this.vars.space.refX;
-            refXStart = this.vars.space.refXStart;
-            spacerLenIdx = this.vars.space.spacerLenIdx;
-            
-            muEffVec = this.vars.muEffVec;
-            numMu    = this.vars.numMu;
-
-            phiInc = exp(-muEffVec.*abs(incX));
-            spacer = zeros(numMu, spacerLenIdx);
-            phiRef = 0*exp(-muEffVec.*abs(refX-refXStart));
-            
-            phi = [phiInc, spacer, phiRef];
-
-            if this.debug
-                reconSize = this.vars.reconSize;
-                phi = (1e-2)*ones(numMu, reconSize);
-                phi(:,1) = 1e-3;
-                phi(:, 300:330) = 1;
-            end
-            
-            this.phiMath = phi;
-        end
-        
         function alignAndInterpUS(this)
             fprintf("VAOS: Aligning US profile to Fluence\n");
             x = this.vars.x;
             
-            [~, focalPointIdx] = min(abs(x+this.vars.usFocalPointDistFromInterface));
+            [~, focalPointIdx] = min(abs(x+this.vars.usDistFromInt));
             usFocalPos = x(focalPointIdx);
             
-            profileDepthVecArt = this.usVars.profileDepthVecRaw - this.usVars.usFocalLen + usFocalPos;
+            profileDepthVecArt = this.vars.us.usDepthVecRaw - this.vars.us.usFocalLen + usFocalPos;
             depthProfileArt    = this.us.depthProfile';
             
             if x(1) < profileDepthVecArt(1)
@@ -341,24 +320,7 @@
 
             this.profiles.usIntProfile = usIntProfile;
         end
-        
-        function naiveSim(this)
-            fprintf("VAOS: Performing Naive Simulation\n");
-            measPhiNaive = this.phiMath.*this.profiles.focalProfileInt.*this.profiles.usIntProfile;
 
-            figure();
-            for i=1:5
-                ax(i) = subplot(2,3,i); %#ok<AGROW>
-                hold on
-                plot(log(this.phiMath(i,:)))
-                plot(real(log(measPhiNaive(i,:))))
-                xlabel("X[mm]")
-                ylabel("Fluence [AU]")
-                title(sprintf("Math. Phantom: %d", i))
-            end
-            linkaxes(ax);
-        end
-        
         function createPulses(this)
             fprintf("VAOS: Creating Pulses\n");
             singleCycleIdx = this.vars.singleCycleIdx;
@@ -386,8 +348,8 @@
             this.pulses.pulseSinSig = [zeros(1,pad), sinSig];
 
             % Measured Pulse:
-            this.pulses.pulseMeas    = this.us.pulseNorm;
-            this.pulses.pulseMeasSig = this.us.focalPulseSigNorm;
+            this.pulses.pulseMeas    = this.us.pulseEnv;
+            this.pulses.pulseMeasSig = this.us.pulseSig;
         end
         
         function [env, sig] = choosePulseShape(this)
@@ -409,6 +371,9 @@
                     sig = this.pulses.pulseMeasSig;
                 case 'other'   
             end
+
+            this.pulse.sig = sig;
+            this.pulse.env = env;
         end
         
         function buildSPMatrix(this)
@@ -445,15 +410,15 @@
             
             pulsePos    = [1, zeros(1,reconSize-1)];
             for i = 1:reconSize
-                curSqnc          = circshift(pulsePos, (i-1));
-                curSqncSpatial   = curSqnc.*focalProfileInt.*usIntProfile;
+                curSqnc            = circshift(pulsePos, (i-1));
+                curSqncSpatial     = curSqnc.*focalProfileInt.*usIntProfile;
                 transmissionEnvSP  = conv(curSqncSpatial, flip(pulseEnv), 'full');
                 transMatEnvSP(:,i) = transmissionEnvSP(startIdx:endIdx);
 
                 transmissionSigSP  = conv(curSqncSpatial, flip(pulseSig), 'full');
                 transMatSigSP(:,i) = transmissionSigSP(startIdx:endIdx);
 
-                if this.displayDebug && ((i==1) || (~mod(i,10)) || (i ==reconSize))
+                if this.displayDebug && ((i==1) || (~mod(i,20)) || (i ==reconSize))
                     set(h1, 'YData', curSqnc);
                     set(h2, 'YData', curSqncSpatial);
                     set(h3, 'CData', transMatEnvSP);
@@ -469,53 +434,6 @@
             this.spatMat.transMatSigSP     = transMatSigSP;
             this.spatMat.transMatEnvNormSP = transMatEnvSP/max(transMatEnvSP(:));
             this.spatMat.transMatSigNormSP = transMatSigSP/max(transMatSigSP(:));
-        end
-        
-        function res = reconSP(this, phi, figs)
-            % Envelope Reconstruction
-            phiEnvRecon     = this.spatMat.transMatEnvNormSP * phi';
-            phiEnvReconNorm = phiEnvRecon ./ max(phiEnvRecon,[],1);
-            
-            % Signal Reconstruction (meaningless)
-            phiSigRecon     = this.spatMat.transMatSigNormSP * phi';
-            phiSigReconNorm = phiSigRecon ./ max(phiSigRecon,[],1);
-
-            res.phiEnvRecon = phiEnvRecon;
-            res.phiEnvReconNorm = phiEnvReconNorm;
-            res.phiSigRecon = phiSigRecon;
-            res.phiSigReconNorm = phiSigReconNorm;
-            
-            if figs
-                hFig1 = figure();
-                set(hFig1, 'NumberTitle', 'off', 'Name', 'SP Recon Envelope');
-                for i=1:5
-                    ax(i) = subplot(2,3,i); %#ok<AGROW>
-                    hold on
-                    plot(this.vars.x, log(phi(i,:)))
-                    plot(this.vars.x, real(log(phiEnvReconNorm(:,i))))
-                    xlabel("X[mm]")
-                    ylabel("Fluence [AU]")
-                    title(sprintf("Phantom: %d", i))
-                    xlim([-60,30]);
-                    ylim([-10,0]);
-                end
-                linkaxes(ax);
-                
-%                 hFig2 = figure();
-%                 set(hFig2, 'NumberTitle', 'off', 'Name', 'SP Recon Sig');
-%                 for i=1:this.vars.numMu
-%                     ax(i) = subplot(2,3,i);
-%                     hold on
-%                     plot( log(phi(i,:)))
-%                     plot( real(log(phiSigReconNorm(:,i))))
-%                     xlabel("X[mm]")
-%                     ylabel("Fluence [AU]")
-%                     title(sprintf("Phantom: %d", i))
-%                     ylim([-10,0])
-%                     xlim([550, 1200])
-%                 end
-%                 linkaxes(ax);
-            end
         end
         
         function buildHadMatrix(this)
@@ -538,17 +456,15 @@
             sVec   = this.vars.sMat(1, :);
             this.vars.sVec = sVec;
             
-            sVecInt          = zeros(sqncCompSpac,N);
+            sVecInt        = zeros(sqncCompSpac,N);
             sVecInt(1, :)  = this.vars.sVec;
-            sVecInt          = sVecInt(:)';
+            sVecInt        = logical(sVecInt(:)');
             
             % Calculate Convolution indices:
             padSize = length(pulseEnv)-1;
             transFullLen = 3*reconSize+padSize;
             startIdx = reconSize + 1;
             endIdx   = 2*reconSize;
-%             startIdx = reconSize + padSize + 1;
-%             endIdx   = 2*reconSize + padSize;
             
             idxVec = 1:transFullLen;
             frame  = (idxVec >= startIdx) & (idxVec <= endIdx);
@@ -572,11 +488,11 @@
             
             for i = 1:reconSize               
                 curSqnc = circshift(sVecInt, (i-1));
-                curIdxs = idxVec(logical(curSqnc));
+                curIdxs = idxVec(curSqnc);
                 transEnvMat(i,:) = sum(transMatEnvSP(curIdxs,:),1);
                 transSigMat(i,:) = sum(transMatSigSP(curIdxs,:),1);
 
-                if this.displayDebug  && ((i==1) || (~mod(i,10)) || (i ==reconSize))
+                if this.displayDebug  && ((i==1) || (~mod(i,20)) || (i ==reconSize))
                     set(h1, 'YData', curSqnc);
                     set(h3, 'CData', transEnvMat);
                     set(h5, 'YData', transEnvMat(i,:));
@@ -586,10 +502,10 @@
                 end
             end
             
-            this.spatMat.transMatEnvHad     = transEnvMat;
-            this.spatMat.transMatSigHad     = transSigMat;
-            this.spatMat.transMatEnvNormHad = transEnvMat/ max(transEnvMat(:));
-            this.spatMat.transMatSigNormHad = transSigMat/ max(transSigMat(:));
+            this.spatMat.transMatEnvHad     = gather(transEnvMat);
+            this.spatMat.transMatSigHad     = gather(transSigMat);
+            this.spatMat.transMatEnvNormHad = gather(transEnvMat/ max(transEnvMat(:)));
+            this.spatMat.transMatSigNormHad = gather(transSigMat/ max(transSigMat(:)));
         end
         
         function buildHadInvMat(this)
@@ -622,157 +538,214 @@
             this.spatMat.sMatInvSqnc = flip(sMatInvSqnc,1);
         end
         
+        function usTranEnv = cutTransUSEnv (this, tr1EnvSize, tr2EnvSize)
+            tr1Idx = this.usVars.tr1FocalIdx;
+            tr2Idx = this.usVars.tr2FocalIdx;
+
+            tr1Idxs = tr1Idx-tr1EnvSize:tr1Idx+tr1EnvSize;
+            tr2Idxs = tr2Idx-tr2EnvSize:tr2Idx+tr2EnvSize;
+
+            usTranEnv = this.us.usTransAmpMat(tr1Idxs,tr2Idxs);
+            usTranEnv = usTranEnv/max(usTranEnv(:));
+
+        end
+        %% Simulations Functions:
+        function createMathematicalFluence(this)
+            fprintf("VAOS: Creating Mathematical Fluence Profile\n");
+            incX = this.vars.space.incX;
+            refX = this.vars.space.refX;
+            refXStart = this.vars.space.refXStart;
+            spacerLenIdx = this.vars.space.spacerLenIdx;
+            
+            muEffVec = this.vars.muEffVec;
+            numMu    = this.vars.numMu;
+
+            phiInc = exp(-muEffVec.*abs(incX));
+            spacer = zeros(numMu, spacerLenIdx);
+            phiRef = exp(-muEffVec.*abs(refX-refXStart));
+            
+            phi = [phiInc, spacer, phiRef];
+
+%             if this.debug
+%                 reconSize = this.vars.reconSize;
+%                 phi = (1e-2)*ones(numMu, reconSize);
+%                 phi(:,1) = 1e-3;
+%                 phi(:, 300:330) = 1;
+%             end
+            
+            this.phiMath = phi;
+        end
+
+        function res = reconNaive(this, phi, figs)
+            fprintf("VAOS: Reconstructing Naive Approach\n");
+            numPh = size(phi,1);
+            reconSize = this.vars.reconSize;
+
+            tr1Size = size(phi, 3);
+            tr2Size = size(phi, 4);
+
+            tr1EnvSize = floor(tr1Size/2);
+            tr2EnvSize = floor(tr2Size/2);
+
+            phiEnvRecon     = zeros(numPh, reconSize);
+            phiEnvReconNorm = zeros(numPh, reconSize);
+            phiSigRecon     = zeros(numPh, reconSize);
+            phiSigReconNorm = zeros(numPh, reconSize);
+
+            trEnvMat = this.cutTransUSEnv(tr1EnvSize, tr2EnvSize);
+            trEnvMat = repmat(permute(trEnvMat, [3,1,2]), reconSize, 1, 1);
+
+            for i=1:numPh
+                curPhi = squeeze(phi(i,:,:,:));
+                curPhi = curPhi .* trEnvMat;
+                curPhi = reshape(curPhi, reconSize, []);
+
+                phiEnvRecon(i,:)     = sum(curPhi, 2);
+                phiEnvReconNorm(i,:) = phiEnvRecon(i,:)./max(phiEnvRecon(i,:),[], 2);
+            end
+
+            res.phiEnvRecon     = phiEnvRecon;
+            res.phiEnvReconNorm = phiEnvReconNorm;
+            res.phiSigRecon     = phiSigRecon;
+            res.phiSigReconNorm = phiSigReconNorm;
+
+            if figs
+                this.displayConvRecon(phi, phiEnvReconNorm, 'Naive Recon Env')
+            end
+        end
+
+        function res = reconSP(this, phi, figs)
+            fprintf("VAOS: Reconstructing with Single-Pulse US.\n")
+            numPh = size(phi,1);
+            reconSize = this.vars.reconSize;
+
+            tr1Size = size(phi, 3);
+            tr2Size = size(phi, 4);
+
+            tr1EnvSize = floor(tr1Size/2);
+            tr2EnvSize = floor(tr2Size/2);
+
+            phiEnvRecon      = zeros(numPh, reconSize);
+            phiEnvReconAlign = zeros(numPh, reconSize);
+            phiEnvReconNorm  = zeros(numPh, reconSize);
+            phiSigRecon      = zeros(numPh, reconSize);
+            phiSigReconAlign = zeros(numPh, reconSize);
+            phiSigReconNorm  = zeros(numPh, reconSize);
+
+            trEnvMat = this.cutTransUSEnv(tr1EnvSize, tr2EnvSize);
+            trEnvMat = repmat(permute(trEnvMat, [3,1,2]), reconSize, 1, 1);
+
+            for i=1:numPh
+                curPhi = squeeze(phi(i,:,:,:));
+                curPhi = curPhi .* trEnvMat;
+                curPhi = reshape(curPhi, reconSize, []);
+
+                % Envelope Reconstruction
+                phiEnvRecon(i,:)      = sum(this.spatMat.transMatEnvNormSP * curPhi, 2);
+                phiEnvReconAlign(i,:) = this.interpAlignReplPhi(phiEnvRecon(i,:), this.vars.x, false, true, false);
+                phiEnvReconNorm(i,:)  = phiEnvReconAlign(i,:) ./ max(phiEnvReconAlign(i,:),[], 2);
+                
+                % Signal Reconstruction (meaningless)
+                phiSigRecon(i,:)     = sum(this.spatMat.transMatSigNormSP * curPhi, 2);
+                phiSigReconAlign(i,:) = this.interpAlignReplPhi(phiSigRecon(i,:), this.vars.x, false, true, false);
+                phiSigReconNorm(i,:) = phiSigRecon(i,:) ./ max(phiSigRecon(i,:),[], 2);
+            end
+
+            res.phiEnvRecon      = phiEnvRecon;
+            res.phiEnvReconAlign = phiEnvReconAlign;
+            res.phiEnvReconNorm  = phiEnvReconNorm;
+            res.phiSigRecon      = phiSigRecon;
+            res.phiSigReconAlign = phiSigReconAlign;
+            res.phiSigReconNorm  = phiSigReconNorm;
+
+            if figs
+                this.displayConvRecon(phi, phiEnvReconNorm, 'SP Recon Envelope')
+            end
+
+            this.res.conv.SP = res;
+        end
+
         function res = reconHad(this, phi, figs)
-            phiEnvRecon     = this.spatMat.sMatInvSqnc * this.spatMat.transMatEnvNormHad * phi';
-            phiEnvReconNorm = phiEnvRecon./max(phiEnvRecon,[],1);
+            fprintf("VAOS: Reconstructing with Hadamard US.\n")
+            numPh = size(phi,1);
+            reconSize = this.vars.reconSize;
+
+            tr1Size = size(phi, 3);
+            tr2Size = size(phi, 4);
+
+            tr1EnvSize = floor(tr1Size/2);
+            tr2EnvSize = floor(tr2Size/2);
+
+            phiEnvRecon     = zeros(numPh, reconSize);
+            phiEnvReconNorm = zeros(numPh, reconSize);
+            phiSigRecon     = zeros(numPh, reconSize);
+            phiSigReconNorm = zeros(numPh, reconSize);
+
+            trEnvMat = this.cutTransUSEnv(tr1EnvSize, tr2EnvSize);
+            trEnvMat = repmat(permute(trEnvMat, [3,1,2]), reconSize, 1, 1);
             
-            phiSigRecon     = this.spatMat.sMatInvSqnc * (this.spatMat.transMatSigNormHad * phi');
-            phiSigReconNorm = phiSigRecon./max(phiSigRecon,[],1);
-            
+            hadEnvMat = gpuArray(this.spatMat.transMatEnvNormHad);
+            hadSigMat = gpuArray(this.spatMat.transMatSigNormHad);
+            hadInvMat = gpuArray(this.spatMat.sMatInvSqnc);
+
+            for i=1:numPh
+                curPhi = gpuArray(squeeze(phi(i,:,:,:)));
+                curPhi = curPhi .* trEnvMat;
+                curPhi = reshape(curPhi, reconSize, []);
+
+                phiEnvRecon(i,:)     = gather(sum(hadInvMat * hadEnvMat * curPhi, 2));
+                phiEnvReconNorm(i,:) = phiEnvRecon(i,:)./max(phiEnvRecon(i,:),[], 2);
+                
+                phiSigRecon(i,:)     = gather(sum(hadInvMat * hadSigMat * curPhi, 2));
+                phiSigReconNorm(i,:) = phiSigRecon(i,:)./max(phiSigRecon(i,:),[], 2);
+            end
+
             res.phiEnvRecon     = phiEnvRecon;
             res.phiEnvReconNorm = phiEnvReconNorm;
             res.phiSigRecon     = phiSigRecon;
             res.phiSigReconNorm = phiSigReconNorm;
             
             if figs
-                hFig1 = figure();
-                set(hFig1, 'NumberTitle', 'off', 'Name', 'Had Recon Sig');
-                for i=1:this.vars.numMu
-                    ax(i) = subplot(2,3,i);
-                    hold on
-                    plot(this.vars.x, log(phi(i,:)))
-                    plot(this.vars.x, log(abs(phiEnvReconNorm(:,i))))
-%                     plot(log(phi(i,:)))
-%                     plot(log(abs(phiEnvReconNorm(:,i))))
-%                     plot(phi(i,:))
-%                     plot(phiEnvReconNorm(:,i))
-                    xlabel("X[mm]")
-                    ylabel("Fluence [AU]")
-                    title(sprintf("Phantom: %d", i))
-                    xlim([-60,30]);
-                    ylim([-10,0]);
-                end   
-                linkaxes(ax);
-%                 hFig2 = figure();
-%                 set(hFig2, 'NumberTitle', 'off', 'Name', 'Had Recon Sig');
-%                 for i=1:this.vars.numMu
-%                     subplot(2,3,i)
-%                     hold on
-%                     plot(this.vars.x, log(phi(i,:)))
-%                     plot(this.vars.x, log(abs(phiSigReconNorm(:,i))))
-%                     xlabel("X[mm]")
-%                     ylabel("Fluence [AU]")
-%                     title(sprintf("Phantom: %d", i))
-%     %                 xlim([-60,30]);
-%     %                 ylim([-10,0]);
-%                 end  
+                this.displayConvRecon(phi, phiEnvReconNorm, 'Had Recon Env')
             end
-            
-        end
-        
-        function res = reconAll(this, phi)
-            res.sp = this.reconSP(phi, false);
-            res.had = this.reconHad(phi, false);
-            
-            hFig1 = figure();
-            set(hFig1, 'NumberTitle', 'off', 'Name', 'Had Recon Sig');
-            for i=1:this.vars.numMu
-                ax(i) = subplot(2,3,i);
-                hold on
-                plot(this.vars.x, log(phi(i,:)))
-                plot(this.vars.x, log(abs(res.sp.phiEnvReconNorm(:,i))))
-                plot(this.vars.x, log(abs(res.had.phiEnvReconNorm(:,i))))
-                xlabel("X[mm]")
-                ylabel("Fluence [AU]")
-                title(sprintf("Phantom: %d", i))
-                legend("Phi", "SP", "Had", 'Location', 'northwest')
-                xlim([-60,30]);
-                ylim([-10,0]);
-            end   
-            linkaxes(ax);
-            
-        end
-        
-        function phiSimAligned = alignExternalPhi(this, phi, depthVec, figs)
-            dX = this.vars.dX;
-            x = this.vars.x;
-            numMu = this.vars.numMu;
-            spacerLen = this.vars.space.spacerLenIdx;
 
-            % Interpolate for x vec resolution:
-            depthVecSimInt = depthVec(1) : dX : depthVec(end);
-            phiSim1SideInt = zeros(numMu, length(depthVecSimInt));
-            phiSim1SideLen = length(depthVecSimInt);
-            
-            for i=1:numMu
-                phiSim1SideInt(i,:) = interp1(depthVec, phi(i,:), depthVecSimInt, 'pchip');
-            end
-            
-            % Build spatial fluence:
-            phiSim2Side   = [flip(phiSim1SideInt,2), zeros(numMu,spacerLen), phiSim1SideInt];
-            depthVec2Side = (0:1:(size(phiSim2Side,2)-1))*dX;
-            xSim          = depthVec2Side - depthVec2Side(phiSim1SideLen);
-            
-            if x(1) < xSim(1)
-                phiSim2Side = [zeros(numMu,1), phiSim2Side];
-                xSim = [x(1), xSim];
-            end
-            
-            if x(end) > xSim(end)
-                phiSim2Side    = [phiSim2Side, zeros(numMu,1)];
-                xSim = [xSim, x(end)];
-            end
-            
-            
-            phiSimAligned = zeros(5, length(x));
-            for i=1:5
-                curSim = interp1(xSim, phiSim2Side(i,:), x, 'pchip');
-                phiSimAligned(i,:) = curSim/max(curSim);
-            end
-            
-            if figs
-                figure();
-                subplot(1,2,1)
-                plot(x, phiSimAligned)
-                subplot(1,2,2)
-                plot(x, log(normMatf(phiSimAligned,2)))
-            end
+            this.res.conv.had = res;
         end
         
-        function matchMeasAndSim(this, phiMeas, xMeas, phiSim, xSim)
-            phiRawAlign = this.alignExternalPhi(phiSim, xSim, false);
-            phiReconHad = this.reconHad(phiRawAlign, false);
-            phiReconHadNorm = phiReconHad.phiEnvReconNorm;
-            
-            figure();
-            for i=1:this.vars.numMu
-                ax(i) = subplot(2,3,i);
-                hold on
-                plot(this.vars.x, log(phiRawAlign(i,:)))
-                plot(this.vars.x, log(abs(phiReconHadNorm(:,i))))
-                plot(xMeas, log(phiMeas(i,:)));
-                xlabel("X[mm]")
-                ylabel("Fluence [AU]")
-                legend("MCX", "Conv", "Meas", 'Location', 'northwest')
-                title(sprintf("Phantom: %d", i))
-                xlim([-50,50])
-                ylim([-10,0])
+        function res = reconAll(this, phi, depthVec, figs)
+            res.fluence.phi = this.interpAlignReplPhi(phi, depthVec, true, true, false);
+
+            res.naive   = this.reconNaive(res.fluence.phi, false);
+            res.sp      = this.reconSP(res.fluence.phi, false);
+            res.had     = this.reconHad(res.fluence.phi, false);
+            res.speckle = this.speckleSim(res.fluence.phi, false);
+
+            this.res = res;
+            if this.figs
+                this.displayAllRecon(res);
             end
-            linkaxes(ax)
-            
+        end
+
+        function res = runSpeckleSim(this, uVars, phi, figs)
+            this.setSpeckleSimVaes(uVars);
+            res = this.speckleSim(phi, figs);
         end
 
         function res = speckleSim(this, phi, figs)
-            phi = gpuArray(abs(phi));
+            phi = abs(phi);
             numPh = size(phi,1);
+            tr1Size = size(phi,3);
+            tr2Size = size(phi,4);
+            tr1Env  = floor(tr1Size/2);
+            tr2Env  = floor(tr2Size/2);
 
             %----------------------------------------
             % Calculate AO Reconstruction dimensions:
             %----------------------------------------
             reconSize       = this.vars.reconSize;
             
-            framesPerSig    = 1000; % number of speckle-decorrelation frames
-            sqncPerFrame    = 10;
+            framesPerSig    = this.vars.speckle.framesPerSig; % number of speckle-decorrelation frames equivalent to time-to-sample.
+            sqncPerFrame    = this.vars.speckle.sqncPerFrame;
             pulsePerSqnc    = this.vars.N;
             samplesPerPulse = this.vars.singleCycleIdx; % theoretical
             
@@ -783,15 +756,15 @@
             numOfPos = pulsePerSqnc;
             
             
-            batchSize    = 10;
+            batchSize    = this.vars.speckle.batchSize;
             numOfBatch   = ceil(framesPerSig/batchSize);
             framesPerSig = numOfBatch * batchSize;
             %----------------------------------------
             % Calculate Time-Space Grid:
             %----------------------------------------
             x = this.vars.x;
-            xMat = repmat(gpuArray(x), reconSize, 1, batchSize); % Time x Space
-%             xMat = repmat(gpuArray(x), reconSize, 1); % Time x Space
+            dX = this.vars.dX;
+            xMat = repmat(x, reconSize, 1, batchSize); % Time x Space
             xUS = x(1:samplesPerPulse:end);
             this.vars.xUS = xUS;
             
@@ -805,24 +778,33 @@
             fUsIdxPos = floor(fUS /df) + 1 + N/2;
             
             %----------------------------------------
+            % Calculate Transversal Grid
+            %----------------------------------------
+            tr1Idx = this.usVars.tr1FocalIdx;
+            tr2Idx = this.usVars.tr2FocalIdx;
+            
+            usTransAmp = this.us.usTransAmpMat(tr1Idx-tr1Env:tr1Idx+tr1Env,tr2Idx-tr2Env:tr2Idx+tr2Env); 
+            usTransAmp = usTransAmp/max(usTransAmp(:));
+            %----------------------------------------
             % EM Parameters:
             %----------------------------------------
             transMatSigNormSP  = this.spatMat.transMatSigNormSP; % US Modulation
             transMatSigNormHad = this.spatMat.transMatSigNormHad;
             
-            n      = 1.34;
-            lambda = 785e-9;
+            n      = this.vars.speckle.n;
+            lambda = this.vars.speckle.lambda;
             k0     = 2*pi/lambda; 
-            gamma  = 1e-1; % modulation depth
-            dnSP   = gpuArray(-pi*gamma*transMatSigNormSP); % IS dn linear? should find a reference
-            dnHad  = gpuArray(-pi*gamma*transMatSigNormHad);
+            gamma  = this.vars.speckle.gamma; % modulation depth
+            dnSP   = repmat(gpuArray(-gamma*transMatSigNormSP), 1, 1, batchSize); % IS dn linear? should find a reference
+            dnHad  = repmat(gpuArray(-gamma*transMatSigNormHad), 1, 1, batchSize);
             
-            numOfGrain = 100;  % number of speckle grains;
-            SBR        = 1000; % Signal-to-background ratio -> does not affect the SNR (obviously)
+            numOfGrain = this.vars.speckle.numOfGrain;  % number of speckle grains;
+            SBR        = this.vars.speckle.SBR; % Signal-to-background ratio -> does not affect the SNR (obviously)
             
-            cleanSigSP = gpuArray(zeros(samplesPerSqnc, framesPerSig));
-            IdSPMat  = zeros(samplesPerFrame, framesPerSig, numPh);
-            IdHadMat = zeros(samplesPerFrame, framesPerSig, numPh);
+            cleanSigSP  = zeros(samplesPerSqnc, framesPerSig, 'gpuArray');
+            cleanSigHad = zeros(samplesPerSqnc, framesPerSig, 'gpuArray');
+            IdSPMat    = zeros(samplesPerFrame, framesPerSig, numPh);
+            IdHadMat   = zeros(samplesPerFrame, framesPerSig, numPh);
             
             %-----------------------------------
             % Create Electrical Circuit LPF:
@@ -834,12 +816,12 @@
             padSize    = ipfPivot-1;
             paddedSize = samplesPerFrame + 2*padSize;
             
-            filterMat  = zeros(samplesPerFrame, paddedSize, 'gpuArray');
+            filterMat  = zeros(samplesPerFrame, paddedSize);
             
             % Create a batch:
             batchRowSize    = 1000;
             batchColSize = batchRowSize + 2*padSize;
-            batchMat     = zeros(batchRowSize, batchColSize, 'gpuArray');
+            batchMat     = zeros(batchRowSize, batchColSize);
             
             for i=1:batchRowSize
                endCol   = i + lpfLen-1;
@@ -867,139 +849,153 @@
             clear batchMat
             %-----------------------------------
             % Create Inverse Hadamard Matrix:
-            %-----------------------------------
-%             sVecInv = this.vars.sMatInv(1,:);
-% 
-%             sVecInvSqnc        = zeros(sqncCompSpac,N);
-%             sVecInvSqnc(1,:)   = flip(sVecInv);
-%             sVecInvSqnc        = sVecInvSqnc(:)';
-% 
-%             sMatInvSqnc = zeros(reconSize);
-%             
-%             for i=1:reconSize
-%                 sMatInvSqnc(i,:) = circshift(sVecInvSqnc, -(i-1));
-%             end
-%             
-%             figure();
-%             subplot(1,2,1)
-%             imagesc(transMatSigNormHad)
-%             subplot(1,2,2)
-%             imagesc(sMatInvSqnc)
-            
+            %-----------------------------------  
             sMatInvSqnc = this.spatMat.sMatInvSqnc;
-%             sMatInv = eye(sqncPerFrame);
-            
-%             sMatInv = kron(eye(sqncPerFrame), sMatInvSqnc);
             sMatInv = gpuArray(sMatInvSqnc);
-            %----------------------------------------
             
+            %----------------------------------------
+            % Init data structure
+            %----------------------------------------
             phiReconSP      = zeros(numPh, numOfPos);
             phiReconHad     = zeros(numPh, numOfPos);
             phiReconSPNorm  = zeros(numPh, numOfPos);
             phiReconHadNorm = zeros(numPh, numOfPos);
             
-            if this.displayDebug
-                figure();
-                subplot(1,2,1)
-                plot(lpfT)
-                subplot(1,2,2)
-                imagesc(filterMat)
-                
-                figure()
-                subplot(2,2,1)
-                hp1 = plot(x, zeros(1,reconSize));
-                title("Clean Sig")
-                subplot(2,2,2)
-                hp2 = plot(x, zeros(1,reconSize));
-                title("Noised Signal")
-                subplot(2,2,3)
-                hp3 = plot(x, zeros(1,reconSize));
-                title("Digitized Signal")
-            end
+            EgAOSP  = zeros(reconSize, 1, batchSize, 'gpuArray');
+            EgAOHad = zeros(reconSize, 1, batchSize, 'gpuArray');
             
+            spatPhase = gpuArray(exp(1i.*n.*k0.*xMat*1e-3));
+            
+            T0 = zeros(numOfBatch, tr1Size, tr2Size, 5);
+            T1 = zeros(numOfBatch, tr1Size, tr2Size);
+            T2 = zeros(numOfBatch, tr1Size);
+            T3 = zeros(numOfBatch, 1);
+            T4 = zeros(numOfBatch, 6);
+            %----------------------------------------
+            % Simulate:
+            %----------------------------------------
             for j=1:numPh
                 fprintf("SpeckleSim: Phantom #%d \n", j);
-                Ephii = repmat(sqrt(phi(j,:)), reconSize, 1);
-                Ebkg  = SBR*sum(sqrt(phi(j,:)))* ones(reconSize, numOfGrain);
+                tPh = tic;
                 
+                curPhi = gpuArray(phi(j,:,:,:));
+%                 Ephii  = zeros(reconSize, reconSize, batchSize, 'gpuArray');
+                Ebkg   = SBR*sum(sqrt(curPhi(1,:)))* ones(reconSize, numOfGrain, 'gpuArray');
                 %----------------------------------------------------------
                 % Intereferece between modulated and unmodulated fields:
                 %----------------------------------------------------------
-                trun = tic;
                 tFrames = tic;
                 for i=1:numOfBatch
+                    
+                    if i==1 || ~mod(i, 25)
+                       fprintf("Batch: %d\n", i); 
+                    end
+                    
                     tFrame = tic;
-                    startIdx =  (i-1)*batchSize+1;
-                    endIdx   =  i*batchSize;
                     
-                    tPhase = tic;
-                    phaseX = 2*pi*rand(1,numOfPos, batchSize, 'gpuArray');
-                    phaseX = repmat (phaseX, samplesPerPulse, 1, 1);
-                    phaseX = reshape(phaseX, 1, samplesPerSqnc, batchSize);
-                    phaseX = repmat (phaseX, reconSize, 1, 1);
-                    T(i, 1) = toc(tPhase);
+                    tAlloc = tic;
+                    EgAOSP(:)  = 0;
+                    EgAOHad(:) = 0;
+                    T4(i,1) = toc(tAlloc);
                     
-                    tField = tic;
-                    EiSP  = Ephii .* exp(1i*n*k0.*xMat) .* exp(1i*phaseX) .* exp(1i*dnSP);
-                    EiHad = Ephii .* exp(1i*n*k0.*xMat) .* exp(1i*phaseX) .* exp(1i*dnHad);
-                    T(i, 2) = toc(tPhase);
-                    
-                    tGrains = tic;
-                    EgAOSP  = repmat(sum(EiSP,2),1, numOfGrain, 1);
-                    EgAOHad = repmat(sum(EiHad,2),1, numOfGrain, 1);
-                    T(i, 3) = toc(tPhase);
-                    
+                    tEnv = tic;
+                    for m = 1:tr1Size
+                        tLine = tic;
+                        for n = 1:tr2Size
+                            tPoint = tic;
+                            startIdx =  (i-1)*batchSize+1;
+                            endIdx   =  i*batchSize;
+                            
+                            tEphi = tic;
+%                             Ephii(:,:,:) = repmat(curPhi(1,:,m,n), reconSize, 1, batchSize);
+                            Ephii = repmat(curPhi(1,:,m,n), reconSize, 1, batchSize);
+                            T0(i,m,n,1) = toc(tEphi);
+                            
+                            tPhase = tic;
+                            phaseX = repmat (2*pi*rand(1,numOfPos, batchSize, 'gpuArray'), samplesPerPulse, 1, 1);
+                            phaseX = 1i.*repmat (reshape(phaseX, 1, samplesPerSqnc, batchSize), reconSize, 1, 1);
+                            T0(i,m,n,2) = toc(tPhase);
+
+                            tField = tic;
+                            EiSP  = Ephii .*  spatPhase .* exp((1i.*usTransAmp(m,n).*k0.*dX*1e-3).*dnSP  + phaseX);
+                            EiHad = Ephii .*  spatPhase .* exp((1i.*usTransAmp(m,n).*k0.*dX*1e-3).*dnHad + phaseX);
+                            T0(i,m,n,3) = toc(tField);
+                            
+                            tGrains = tic;
+                            EgAOSP(:,1,:)  = EgAOSP  + sum(EiSP,2);
+                            EgAOHad(:,1,:) = EgAOHad + sum(EiHad,2);
+                            T0(i,m,n,4) = toc(tGrains);
+                            
+                            tClear = tic;
+                            clear EiHad EiSP phaseX;
+                            T0(i,m,n,5) = toc(tClear);
+                            
+                            T1(i,m,n) = toc(tPoint);
+                        end
+                        T2(i,m) = toc(tLine);
+                    end
+                    T3(i) = toc(tEnv);
+
                     tBkg = tic;
-                    phaseG  = repmat(2*pi*rand(1, numOfGrain, batchSize, 'gpuArray'), reconSize, 1, 1);
-                    phaseG2 = exp(1i*phaseG);
-                    Ebkgg   = Ebkg.*phaseG2;
-                    T(i, 4) = toc(tPhase);
-                    
+                    Ebkgg   = Ebkg.*exp(repmat(1i.*2.*pi.*rand(1, numOfGrain, batchSize, 'gpuArray'), reconSize, 1, 1));
+                    T4(i,2) = toc(tBkg);
+
                     tInt = tic;
-                    EgSP  = EgAOSP  + Ebkgg;
-                    EgHad = EgAOHad + Ebkgg;
-                    T(i, 5) = toc(tPhase); 
-                    
-                    tPower = tic;
-                    IgSP  = EgSP.*conj(EgSP);
-                    IgHad = EgSP.*conj(EgHad);
-                    T(i, 6) = toc(tPhase);
-                    
+                    EgSP  = repmat(EgAOSP,  1, numOfGrain, 1)  + Ebkgg;
+                    EgHad = repmat(EgAOHad, 1, numOfGrain, 1)  + Ebkgg;
+                    T4(i, 3) = toc(tInt); 
+
                     % Calculate net signal that hits the detector:
                     tDet = tic;
-                    cleanSigSP(:,startIdx:endIdx)  = squeeze(sum(abs(IgSP), 2));
-                    cleanSigHad(:,startIdx:endIdx) = squeeze(sum(abs(IgHad), 2));
-                    T(i, 7) = toc(tPhase);
+                    cleanSigSP(:, startIdx:endIdx)  = squeeze(sum(abs(EgSP.*conj(EgSP)), 2));
+                    cleanSigHad(:, startIdx:endIdx) = squeeze(sum(abs(EgHad.*conj(EgHad)), 2));
+                    T4(i, 4) = toc(tDet);
                     
-                    T(i, 8) = toc(tFrame);
+                    tClearFrame = tic;
+                    clear Ebkgg;
+                    clear EgSP EgHad;
+                    T4(i, 5) = toc(tClearFrame);
+                    
+                    T4(i, 6) = toc(tFrame);
                 end
-                avgT = 1e3*mean(T,1);
-                fprintf("\nSpeckleSim: create random data for all frames %.2f[s]\n", toc(tFrames))
-                fprintf ("SpeckleSim: Average Frame Calc. Timings:\n")
-                fprintf ("Phase: %.2f | Field: %.2f | Grains: %.2f | Bkg: %.2f | Int: %.2f | Power: %.2f | Det: %.2f\n",...
-                    avgT(1), avgT(2), avgT(3), avgT(4), avgT(5), avgT(6), avgT(7));
+                T5 = toc(tFrames);
                 
-                tClearFrame = tic;
+                %----------------------------------------------------------
+                % Logistics calculations & clearing:
+                %----------------------------------------------------------
+                %Average timings
+                avgT0 = 1e3*squeeze(mean(mean(mean(T0,1),2),3)); 
+                avgT1 = 1e3*squeeze(mean(mean(mean(T1,1),2),3)); 
+                avgT2 = mean(T2(:)); 
+                avgT3 = mean(T3);
+                avgT4 = 1e3*mean(T4,1);
+                
+                % Clear unneeded heavy variable:
+                tClearPH = tic;
+                
+                
                 clear Ephii Ebkg;
-                clear phaseX EiSP EiHad EgAOSP EgAOHad phaseG phaseG2 Ebkgg EgSP EgHad IgSP IgHad 
-                fprintf("SpeckleSim: Clearing Variables  %.2f[s]\n", toc(tClearFrame));
+%                 clear Ebkgg;
+                tClearPH = toc(tClearPH);
                 
-                % replicate the clean signal:
+                %Print Timing:
+                fprintf("SpeckleSim: Timings:\n"); 
+                fprintf("(1) Average Field Calc. Timings: \n    Ephi: %.2f[ms] | Phase: %.2f[ms] | Field: %.2f[ms] | Grains: %.2f[ms] | Clear: %.2f[ms].\n",...
+                        avgT0(1), avgT0(2), avgT0(3), avgT0(4), avgT0(5))
+                fprintf("(2) Create Random AO Fields for:\n    Point: %.2f[ms] | Line: %.2f[s] | Env: %.2f[s].\n", avgT1, avgT2, avgT3)
+                fprintf("(3) Average Frame Calc. Timings: \n   Alloc: %.2f[ms] | Bkg: %.2f[ms] | Int: %.2f[ms] | Det: %.2f[ms] | Clear: %.2f[ms] | Frame: %.2f[s].\n", ...
+                        avgT4(1), avgT4(2), avgT4(3), avgT4(4), avgT4(5), 1e-3*avgT4(6));
+                fprintf("(4) All frames complete randomization & interference: %.2f[s].\n", T5);
+                fprintf("(5) Clearing Variables  %.2f[ms]\n", tClearPH*1e3);
+                
+                tSignal = tic;
+                %----------------------------------------------------------
+                % Replicate clean signal for Sequencing:
+                %----------------------------------------------------------
                 tSqnc = tic;
                 cleanSigFrameSP  = repmat(cleanSigSP,  sqncPerFrame, 1);
                 cleanSigFrameHad = repmat(cleanSigHad, sqncPerFrame, 1);
-                fprintf("SpeckleSim: Replicate clean signal for Sqnc %.2f[s]\n", toc(tSqnc))
-                
-%                 cleanSigFrameHadSqnc   = reshape(cleanSigFrameHad(:,1), samplesPerSqnc, sqncPerFrame);
-%                 cleanSigFrameHadSqncDM = sMatInv*cleanSigFrameHadSqnc;
-%                 cleanSigFrameHadDM     = reshape(cleanSigFrameHadSqncDM, samplesPerFrame, 1);
-%                 
-%                 figure();
-%                 ax(1) = subplot(1,2,1);
-%                 plot(cleanSigFrameSP(:,1));
-%                 ax(2) = subplot(1,2,2);
-%                 plot(cleanSigFrameHadDM(:,1));
-%                 linkaxes(ax, 'x');
+                tSqnc = 1e3*toc(tSqnc); fprintf("(6) Replicate clean signal for Sqnc %.2f[ms]\n", tSqnc)
                 
                 %----------------------------------------------------------
                 % Intereferece between modulated and unmodulated fields:
@@ -1008,13 +1004,14 @@
                 noise         = sqrt(mean(cleanSigSP(:))) * randn(samplesPerFrame, framesPerSig);
                 noisedSigSP   = noise + cleanSigFrameSP;
                 noisedSigHad  = noise + cleanSigFrameHad;
-                fprintf("SpeckleSim: Add Noise %.2f[s]\n", toc(tNoise))
+                tNoise = 1e3*toc(tNoise); fprintf("(7) Add Noise %.2f[ms]\n", tNoise)
+                
                 
                 % Signal after AC coupling:
                 tAC = tic;
-                acCoupledSP  = noisedSigSP  - mean(cleanSigFrameSP(:));
-                acCoupledHad = noisedSigHad - mean(cleanSigFrameHad(:));
-                fprintf("SpeckleSim: Ac Coupling %.2f[s]\n", toc(tAC));
+                acCoupledSP  = noisedSigSP  - mean(noisedSigSP(:));
+                acCoupledHad = noisedSigHad - mean(noisedSigSP(:));
+                tAC = 1e3*toc(tAC); fprintf("(8) AC Coupling %.2f[ms]\n", tAC);
                 
                 % Signal after LPF:
                 tPad = tic;
@@ -1024,24 +1021,28 @@
                 paddedSigHad = [acCoupledHad(1)  * ones(padSize,framesPerSig);...
                                 acCoupledHad; ...
                                 acCoupledHad(end)* ones(padSize,framesPerSig)];
-                fprintf("SpeckleSim: Padding %.2f[s]\n", toc(tPad));
+                fprintf("(9) Padding %.2f[ms]\n", 1e3*toc(tPad));
                 
                 tFilter = tic;
-                IdSP  = filterMat * paddedSigSP;
-                IdHad = filterMat * paddedSigHad;
-                fprintf("SpeckleSim: Filtering %.2f[s]\n", toc(tFilter))
+                IdSP  = filterMat * gather(paddedSigSP);
+                IdHad = filterMat * gather(paddedSigHad);
+                tFilter = 1e3*toc(tFilter); fprintf("(10) Filtering %.2f[ms]\n", tFilter)
                 
+                tClearSig = tic;
                 clear cleanSigFrameSP cleanSigFrameHad 
                 clear noise noisedSigSP noisedSigHad acCoupledSP 
                 clear acCoupledHad paddedSigSP paddedSigHad
+                tClearSig = 1e3*toc(tClearSig); fprintf("(11) Clear signals %.2f[ms]\n", tClearSig);
                 
-                fprintf("SpeckleSim: Created the measured signal in %.2f[s]\n", toc(trun));
+                tSignal = toc(tSignal); fprintf("(12) Created the measured signal in %.2f[s]\n", tSignal);
                 
+                tRecon = tic;
                 %-----------------------------------
                 % AOI Reconstruction Algorithm:
                 %-----------------------------------
+                % SP Reconstrcution:
                 tAOSP = tic;
-                A0 = reshape(IdSP(:,:), samplesPerSqnc, sqncPerFrame, framesPerSig);
+                A0 = reshape(IdSP, samplesPerSqnc, sqncPerFrame, framesPerSig);
                 A1 = permute(A0, [2,1,3]);
                 A2 = reshape(A1, sqncPerFrame, samplesPerPulse, numOfPos, framesPerSig);
                 A3 = permute(A2, [2,1,3,4]);
@@ -1050,7 +1051,7 @@
                 A6 = abs(fftshift(fft(A5,[],1),1)).^2;
                 A7 = mean(A6, 3);
                 curReconSP = gather(sqrt(A7(fUsIdxPos , :)));
-                fprintf("SpeckleSim: ReconSP %.2f[s]\n", toc(tFilter));
+                tAOSP = 1e3*toc(tAOSP); fprintf("(13) Recon Single-Pulse: %.2f[ms]\n", tAOSP);
                 
                 phiReconSP(j,:)  = curReconSP;
                 
@@ -1059,11 +1060,13 @@
                 span   = maxVal-minVal;
                 phiReconSPNorm(j,:) = (curReconSP-minVal)/span;
                 
+                sp(j).Id       = gather(IdSP);
                 sp(j).sigFrame = gather(A0);
                 sp(j).sigPos   = gather(A5);
                 sp(j).fft      = gather(A7);
                 sp(j).recon    = gather(phiReconSPNorm(j,:));
                 
+                % Had Reconstrcution:
                 tAOHad = tic;
                 A01 = reshape(IdHad, samplesPerSqnc, sqncPerFrame*framesPerSig);
                 A02 = sMatInv * A01;
@@ -1076,7 +1079,7 @@
                 A6 = abs(fftshift(fft(A5,[],1),1)).^2;
                 A7 = mean(A6, 3);
                 curReconHad = gather(sqrt(A7(fUsIdxPos , :)));
-                fprintf("SpeckleSim: ReconHad %.2f[s]\n", toc(tFilter));
+                tAOHad = 1e3*toc(tAOHad); fprintf("(14) Recon Hadamard: %.2f[ms]\n", tAOHad);
                 
                 phiReconHad(j,:) = curReconHad;
                  
@@ -1085,85 +1088,71 @@
                 span   = maxVal-minVal;
                 phiReconHadNorm(j,:) = (curReconHad-minVal)/span;
                 
+                had(j).Id       = gather(IdHad);
                 had(j).sigFrame = gather(A03);
                 had(j).sigPos   = gather(A5);
                 had(j).fft      = gather(A7);
                 had(j).recon    = gather(phiReconHadNorm(j,:));
                 
-                IdSPMat(:,:,j)  = gather(IdSP);
-                IdHadMat(:,:,j) = gather(IdHad);
-                fprintf("SpeckleSim: AOI Reconstruction in %.2f[s]\n\n", toc(trun))
+%                 IdSPMat(:,:,j)  = gather(IdSP);
+%                 IdHadMat(:,:,j) = gather(IdHad);
+                
+                tRecon = toc(tRecon); fprintf("(15) Total AOI Reconstruction in %.2f[s]\n", tRecon)
+                
+                %-----------------------------------
+                % Clear reconstruction Variable:
+                %-----------------------------------
+                tClearRecon = tic;
                 clear IdSP IdHad A01 A02 A03 A0 A1 A2 A3 A4 A5 A6 A7
+                tClearRecon = 1e3*toc(tClearRecon); fprintf("(16) Clear reconstrcution variables: %.2f[ms]\n", tClearRecon);
+                
+                %-----------------------------------
+                tPh = toc(tPh); fprintf("(17) Complete Synthesis and Reconstruction: %.2f[s]\n\n", tPh);
             end
             
             %Collect Results:
-            res.phi             = phi;
-            res.phiReconHad     = phiReconHad;
-            res.phiReconHadNorm = phiReconHadNorm;
-            res.phiReconSP      = phiReconSP;
-            res.phiReconSPNorm  = phiReconSPNorm;
-            res.detSigSP        = IdSPMat;
-            res.detSigHad       = IdHadMat;
-            res.sp              = sp;
-            res.had             = had;
-            
+            res.recon.phiReconHad     = phiReconHad;
+            res.recon.phiReconHadNorm = phiReconHadNorm;
+            res.recon.phiReconSP      = phiReconSP;
+            res.recon.phiReconSPNorm  = phiReconSPNorm;
+            res.AOData.sp             = sp;
+            res.AOData.had            = had;
+
             % collect vars
             res.vars.xUS             = this.vars.xUS;
             res.vars.fBar            = fBar;
             res.vars.fUS             = fUS;
             res.vars.fUsIdxPos       = fUsIdxPos;
 
-            if figs
-                this.displaySpeckleRes(res)
-            end
-        end
+            this.res.resSpeckle = res;
 
-        function res = matchMeasAndSpeckleSim(this, phiMeas, xMeas, phiSpeckle, xSpeckle, phiConv, phi)
-            
-            numPh = size(phiMeas,1);
-            
-            figure();
-            for i=1:this.vars.numMu
-                ax(i) = subplot(2,3,i);
-                hold on
-                plot(this.vars.x, log(phi(i,:)))
-                if ~isempty(phiSpeckle); plot(xSpeckle, log(abs(phiSpeckle(i,:)))); end
-                if ~isempty(phiConv); plot(this.vars.x, log(abs(phiConv(i,:)))); end
-                plot(xMeas, log(phiMeas(i,:)));
-                xlabel("X[mm]")
-                ylabel("Fluence [AU]")
-                legend("MCX", "Speckle", "Conv", "Meas", 'Location', 'northwest')
-                title(sprintf("Phantom: %d", i))
-                xlim([-50,50])
-                ylim([-10,0])
+            if figs
+                this.displaySpeckleRecon(res)
             end
-            linkaxes(ax)
-            
-%             res.phiMeas    = phiMeas;
-%             res.xMeas      = xMeas;
-%             res.phi        = phi;
-%             res.xPhi       = xPhi;
-%             res.phiSim     = phiSim;
-%             res.phiSimNorm = phiSimNorm;
-%             res.xSim       = this.vars.xUS;
         end
         
+        %% Display Functions:
+        
         function displayResults(this)
+
             fprintf("VAOS: Displaying Results Figures\n");
             x = this.vars.x;
             %-------------------------------
             % Raw US Profile
             %-------------------------------
-            
             figure();
-            subplot(1,2,1)
-            plot(this.usVars.pulseAx, this.us.pulse);
+            subplot(2,2,1)
+            plot(this.usVars.pulseAx, this.pulse.env);
             title("Pulse Envelope")
             xlabel("X[mm]")
             ylabel("Normalized Pressure")
+            subplot(2,2,3)
+            plot(this.usVars.pulseAx, this.pulse.sig);
+            title("Pulse Temporal")
+            xlabel("X[mm]")
+            ylabel("Normalized Pressure")
             subplot(1,2,2)
-            plot(this.usVars.profileDepthVecRaw, this.us.focalProfileNorm);hold on
-            plot(this.usVars.profileDepthVecRaw, this.us.depthProfileNorm)
+            plot(this.vars.us.usDepthVecRaw, this.us.depthProfile);
             title("US Beam Axial Profile");
             xlabel("X[mm]")
             ylabel("Normalized Pressure")
@@ -1263,7 +1252,7 @@
             
         end
         
-        function displaySpeckleRes(this, res)
+        function displaySpeckleRecon(this, res)
             numPh = size(res.phi,1);
             sp        = res.sp;
             had       = res.had;
@@ -1278,8 +1267,7 @@
             for j=1:numPh
                 figure();
                 subplot(2,3,1);
-                plot(squeeze(sp(j).sigFrame(:,1,1)), '-+');
-                yyaxis right
+                plot(squeeze(sp(j).sigFrame(:,1,1)), '-+'); hold on
                 plot(squeeze(had(j).sigFrame(:,1,1)), '-o');
                 title("Signal - SP"); xlabel("t[samples]"); legend("SP", "Had")
                 subplot(2,3,2);
@@ -1294,32 +1282,199 @@
                 plot(fUS*1e-6, had(j).fft(fUsIdxPos, idx), '+g');
                 xlabel("f[MHz]"); title("Fourier Transform"); legend("SP", "Had");
                 subplot(2,3,4);
-                plot(x, res.phi(j,:)); hold on
+                plot(x, res.phi(j,:,1,1)); hold on
                 plot(xUS, sp(j).recon, '-+');
                 plot(xUS, had(j).recon, '-o');
                 legend("Phi", "SP", "Had"); title("Sim. Recon"); xlabel("X[mm]")
                 subplot(2,3,5);
-                plot(x, log(res.phi(j,:))); hold on
+                plot(x, log(res.phi(j,:,1,1))); hold on
                 plot(xUS, log(sp(j).recon), '-+');
                 plot(xUS, log(had(j).recon), '-o');
                 legend("Phi", "SP", "Had"); title("Sim. Recon (Log)"); xlabel("X[mm]");
             end
             
             figure()
-                for i=1:numPh
-                    ax(i) = subplot(2,3,i);
-                    hold (ax(i), 'on')
-                    plot(ax(i), x, log(res.phi(i,:)));
-                    plot(ax(i), xUS, log(res.phiReconSPNorm(i,:)), '-+');
-                    plot(ax(i), xUS, log(res.phiReconHadNorm(i,:)), '-o');
-                    legend(ax(i), "Phi", "SP Sim", "Had Sim")
-                    title(ax(i), sprintf("Phantom: %d", i))
-                    xlabel(ax(i), "X[mm]")
-                    ylim(ax(i), [-10,0])
-                end
-                linkaxes(ax);
+            for i=1:numPh
+                ax(i) = subplot(2,3,i);
+                hold (ax(i), 'on')
+                plot(ax(i), x, log(res.phi(i,:,1,1)));
+                plot(ax(i), xUS, log(res.phiReconSPNorm(i,:)), '-+');
+                plot(ax(i), xUS, log(res.phiReconHadNorm(i,:)), '-o');
+                legend(ax(i), "Phi", "SP Sim", "Had Sim")
+                title(ax(i), sprintf("Phantom: %d", i))
+                xlabel(ax(i), "X[mm]")
+                ylim(ax(i), [-10,0])
+            end
+            linkaxes(ax);
         end
         
+        function displayConvRecon(this, phi, phiRecon, name)
+
+            numPh = size(phi,1);
+            tr1Idx = 1; if size(phi,3) > 1; tr1Idx = floor(size(phi,3)/2); end
+            tr2Idx = 1; if size(phi,4) > 1; tr2Idx = floor(size(phi,4)/2); end
+            
+            cols = ceil(sqrt(numPh));
+            rows = floor(sqrt(numPh));
+
+            hFig1 = figure();
+            set(hFig1, 'NumberTitle', 'off', 'Name', name);
+            for i=1:numPh
+                ax(i) = subplot(rows,cols,i); %#ok<AGROW>
+                hold on
+                plot(this.vars.x, log(phi(i,:, tr1Idx, tr2Idx)))
+                plot(this.vars.x, log(abs(phiRecon(i,:))) )
+                xlabel("X[mm]")
+                ylabel("Fluence [AU]")
+                title(sprintf("Phantom: %d", i))
+                xlim([-60,30]);
+                ylim([-10,0]);
+                legend("MCX", "Conv")
+            end
+            linkaxes(ax);
+        end
+        
+        function displayAllRecon(this, res)
+            if nargin < 2; res = this.res; end
+
+            phi        = res.fluence.phi;
+            naiveRes   = res.naive.phiEnvReconNorm;
+            spRes      = res.sp.phiEnvReconNorm;
+            
+            simHad     = isfield(res, 'had'); 
+            if simHad; hadRes = res.had.phiEnvReconNorm; end
+            
+            simSpec = isfield(res, 'speckle'); 
+            if simSpec; speckleRes = res.speckle.recon.phiReconSPNorm; end
+
+            numPh  = size(spRes, 1);
+            tr1Idx = 1; if size(phi,3) > 1; tr1Idx = floor(size(phi,3)/2); end
+            tr2Idx = 1; if size(phi,4) > 1; tr2Idx = floor(size(phi,4)/2); end
+            
+            cols = ceil(sqrt(numPh));
+            rows = floor(sqrt(numPh));
+
+            legStr = ["MCX", "Naive", "Conv SP"];
+            if simHad; legStr  = [legStr, "Conv Had"]; end
+            if simSpec; legStr = [legStr, "Speckle SP"]; end
+
+            hFig1 = figure();
+            set(hFig1, 'NumberTitle', 'off', 'Name', 'All VAOS Results');
+            for i=1:numPh
+                ax(i) = subplot(rows,cols,i); %#ok<AGROW>
+                hold on
+                plot(ax(i), this.vars.x, log(phi(i,:, tr1Idx, tr2Idx)) )
+                plot(ax(i), this.vars.x, log(naiveRes(i,:)) )
+                plot(ax(i), this.vars.x, log(abs(spRes(i,:))) );
+                if simHad;  plot(ax(i), this.vars.x, log(abs(hadRes(i,:))) ); end
+                if simSpec; plot(ax(i), res.speckle.vars.xUS, log(abs(speckleRes(i,:))) ); end
+                xlabel("X[mm]")
+                ylabel("Fluence [AU]")
+                title(sprintf("Phantom: %d", i))
+                legend(legStr, 'Location', 'northwest');
+                xlim([-60,30]);
+                ylim([-10,0]);
+            end
+            linkaxes(ax);
+        end
+
+        %% Misc
+        function phiAligned = interpAlignReplPhi(this, phi, depthVec, rep, align, figs)
+            dX = this.vars.dX;
+            x = this.vars.x;
+            numPhi  = size(phi, 1);
+            tr1Size = size(phi, 3);
+            tr2Size = size(phi, 4);
+            
+            spacerLen = this.vars.space.spacerLenIdx;
+
+            %-------------------------------------
+            % 1. Interpolate for x vec resolution:
+            %-------------------------------------
+            depthVecSimInt = depthVec(1) : dX : depthVec(end);
+            phiInt1 = zeros(numPhi, length(depthVecSimInt));
+            phiint1Len = length(depthVecSimInt);
+
+            for i=1:numPhi
+                for j=1:tr1Size
+                    for k = 1:tr2Size
+                        phiInt1(i,:,j,k) = interp1(depthVec, phi(i,:,j,k), depthVecSimInt, 'pchip');
+                    end
+                end
+            end
+            
+            %-------------------------------------
+            % 2. Replicate Phi to create spacer effect:
+            %-------------------------------------
+            if rep
+                % Replicate and add spacer between replications
+                phiRep        = [flip(phiInt1,2), zeros(numPhi, spacerLen, tr1Size, tr2Size), phiInt1];
+                depthVec2Side = (0:1:(size(phiRep,2)-1))*dX;
+                xSim          = depthVec2Side - depthVec2Side(phiint1Len);
+            else
+                % Don't replicate and take it as it is
+                phiRep = phiInt1;
+                xSim = depthVecSimInt;
+            end
+            
+            %-------------------------------------
+            % 3. Set edges of phi to zero
+            %-------------------------------------
+            if x(1) < xSim(1)
+                phiRep = [zeros(numPhi,1, tr1Size, tr2Size), phiRep]; % this is to set the **first** point of fluence to 0;
+                xSim = [x(1), xSim];
+            end
+            
+            if x(end) > xSim(end)
+                phiRep    = [phiRep, zeros(numPhi,1,tr1Size, tr2Size)];  % this is to set the **last** point of fluence to 0;
+                xSim = [xSim, x(end)];
+            end
+            
+            %-------------------------------------
+            % 4. Interpolate the replicated phi with hard edges:
+            %-------------------------------------
+            phiInt2 = zeros(numPhi, length(x), tr1Size, tr2Size);
+            for i=1:numPhi
+                for j=1:tr1Size
+                    for k = 1:tr2Size
+                        curPhi = interp1(xSim, phiRep(i,:,j,k), x, 'pchip');
+                        phiInt2(i,:,j,k) = curPhi/max(curPhi);
+                    end
+                end 
+            end
+
+            %-------------------------------------
+            % 5. Align all peaks together:
+            %-------------------------------------
+            if align
+                origin = find(x == 0);
+                [~, I] = max(phiInt2, [], 2);
+                shiftFact = origin- permute(I, [1,3,4,2]);
+                phiAligned = zeros(size(phiInt2));
+                for i=1:numPhi
+                    for j=1:tr1Size
+                        for k = 1:tr2Size
+                            phiAligned(i,:,j,k) = circshift(phiInt2(i,:,j,k),  shiftFact(i,j,k));
+                        end
+                    end 
+                end
+            else
+                phiAligned = phiInt2;
+            end
+            
+            phiAligned = abs(phiAligned);
+            %-------------------------------------
+            % 6. Display:
+            %-------------------------------------
+            if figs
+                figure()
+                subplot(1,2,1)
+                plot(x, phiAligned(:,:, floor(tr1Size/2)+1, floor(tr2Size/2)+1))
+                subplot(1,2,2)
+                plot(x, log(normMatf(phiAligned(:,:, floor(tr1Size/2)+1, floor(tr2Size/2)+1),2)))
+            end
+        end
+
         function recordConv(this)
             reconSize = this.vars.reconSize;
             focalProfileInt = this.profiles.focalProfileInt;
@@ -1387,5 +1542,102 @@
             end
         end
         
+        function resLoaded = loadVAOSRes(this, path)
+            resLoaded = load(path);
+            
+            this.vars     = resLoaded.vars;
+            this.res      = resLoaded.res; 
+            this.profiles = resLoaded.profiles;
+            this.spatMat  = resLoaded.sparMat;
+            this.pulse    = resLoaded.pulse;
+            this.us       = resLoaded.us;
+            this.usVars   = resLoaded.usVars;
+        end
+        
+        function saveVAOSRes(this, path)
+            resSave.vars     = this.vars;
+            resSave.res      = this.res;
+            resSave.profiles = this.profiles;
+            resSave.spatMat  = this.spatMat;
+            resSave.pulse    = this.pulse;
+            resSave.usVars   = this.usVars;
+            resSave.us       = this.us;
+
+            timeStamp   = datetime('now','TimeZone','local','Format','d-MMM-y HH-mm-s');
+            filename    = sprintf("%s/%s-VirtualAOSim-Result.mat", path, timeStamp);
+            save(filename, '-Struct', 'resSave', '-v7.3');
+        end
+        
+        function data = getData(this)
+            data = this.res;
+        end
+
     end
- end
+end
+
+%% Drafts
+%         function matchMeasAndSim(this, phiMeas, xMeas, phiConv, phi)
+%             x = this.vars.x;
+%             measAlign = this.interpAlignReplPhi(phiMeas, xMeas, false, true, false);
+%             
+%             numPh = size(phiMeas,1);
+%             cIdx = 3;
+%             legStr = ["MCX", "Conv", "Meas"];
+%             
+%             if isempty(phiSpeckle); legStr(2) = []; cIdx =2; end
+%             if isempty(phiConv);   legStr(cIdx) = []; end
+%             
+%             figure();
+%             for i=1:this.vars.numMu
+%                 ax(i) = subplot(2,3,i);
+%                 hold on
+%                 plot(x, log(phi(i,:)))
+%                 if ~isempty(phiSpeckle); plot(x, log(abs(speckSPAlign(i,:)))); end
+%                 if ~isempty(phiConv); plot(x, log(abs(phiConv(i,:)))); end
+%                 plot(xMeas, log(phiMeas(i,:)));
+%                 xlabel("X[mm]")
+%                 ylabel("Fluence [AU]")
+%                 legend(legStr, 'Location', 'northwest')
+%                 title(sprintf("Phantom: %d", i))
+%                 xlim([-50,50])
+%                 ylim([-10,0])
+%             end
+%             linkaxes(ax)
+% 
+%         end
+        
+
+%         function res = matchMeasAndSpeckleSim(this, phiMeas, xMeas, phiSpeckle, xSpeckle, phiConv, phi)           
+%             x = this.vars.x;
+%             
+%             measAlign = this.interpAlignReplPhi(phiMeas, xMeas, false, true, false);
+%             if ~isempty(phiSpeckle)
+%                 speckSPAlign = this.interpAlignReplPhi(phiSpeckle, xSpeckle, false, true, false);
+%             end
+%             
+%             numPh = size(phiMeas,1);
+%             cIdx = 3;
+%             legStr = ["MCX", "Speckle", "Conv", "Meas"];
+%             
+%             if isempty(phiSpeckle); legStr(2) = []; cIdx =2; end
+%             if isempty(phiConv);   legStr(cIdx) = []; end
+%             
+%             figure();
+%             for i=1:this.vars.numMu
+%                 ax(i) = subplot(2,3,i);
+%                 hold on
+%                 plot(x, log(phi(i,:)))
+%                 if ~isempty(phiSpeckle); plot(x, log(abs(speckSPAlign(i,:)))); end
+%                 if ~isempty(phiConv); plot(x, log(abs(phiConv(i,:)))); end
+%                 plot(xMeas, log(phiMeas(i,:)));
+%                 xlabel("X[mm]")
+%                 ylabel("Fluence [AU]")
+%                 legend(legStr, 'Location', 'northwest')
+%                 title(sprintf("Phantom: %d", i))
+%                 xlim([-50,50])
+%                 ylim([-10,0])
+%             end
+%             linkaxes(ax)
+%             
+%             res.measAlign = measAlign;
+%         end

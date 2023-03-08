@@ -2,6 +2,21 @@ close all
 clear all %#ok<CLALL> 
 % clc
 
+%%
+pd = PhantomDesigner();
+
+uVars.wl   = 785; %[nm]
+uVars.Vph  = 200;
+uVars.musP = 0.4*ones(1,5); %[mm^-1]
+uVars.mua  = 0.00258 * (2.^[1:5]); %[mm^-1]
+uVars.numLayers = 1;
+uVars.numPh = 5;
+uVars.inkType = 'RoyalTalens';
+uVars.layerThick = 60; %[mm]
+
+pdRes = pd.createPhantomSet(uVars);
+
+%%
 aoSim = aoFluenceSim('MCX');
 
 %% Simulate the fluence
@@ -13,25 +28,17 @@ uVarsAOSim.saveFlag = true;
 uVarsAOSim.simName  = 'GradedAbsorption - measuredMuS';
 
 %Graded Absorption
-% uVarsAOSim.muaVec = [0.0046,  0.0092,  0.0184, 0.0368,  0.0736];%
-% uVarsAOSim.musVec = [0.89912, 0.89848, 0.8972, 0.89464, 0.88953];%
-
-uVarsAOSim.muaVec = [0.00516,  0.01032,  0.02064, 0.04128,  0.08256];%
+% uVarsAOSim.muaVec = [0.00516, 0.01032, 0.02064, 0.04128, 0.08256];
 % uVarsAOSim.musVec = [0.89904, 0.89832, 0.89689, 0.89402, 0.88829];
-uVarsAOSim.musVec = [0.6737, 0.6737, 0.6737, 0.6737, 0.6737];%
+% uVarsAOSim.musVec = [0.6737,  0.6737,  0.6737,  0.6737,  0.6737]; % measured with collimated transmission
 
-%Graded Scattering:
-% uVarsAOSim.muaVec = [0.005154, 0.005149, 0.005138, 0.005116, 0.005073];%
-% uVarsAOSim.musVec = [0.08994, 0.17988, 0.35976, 0.71952, 1.439];%
-
-%Clear Agar:
-% uVarsAOSim.muaVec = [0.0026];%
-% uVarsAOSim.musVec = [0.3196];%
+uVarsAOSim.muaVec = pdRes.op.mua;
+uVarsAOSim.musVec = pdRes.op.mus;
 
 uVarsAOSim.trEnvSize = 1; %idxs
 
-uVarsAOSim.g      = 0.555;%
-uVarsAOSim.ref    = 1.34;%
+uVarsAOSim.g   = 0.555;%
+uVarsAOSim.ref = 1.34;%
 
 % FLuence:
 uVarsAOSim.fluence.loadPhi       = false;
@@ -54,23 +61,20 @@ aoSim.simFluenceSet(uVarsAOSim);
 uVarsAOSim = aoFluenceSim.createUserVars();
 
 % General:
-uVarsAOSim.savePath = 'tmpSimRes/Graded Absorption';
+uVarsAOSim.savePath = './MuEffSimulation/Results/Graded Absorption';
 uVarsAOSim.saveFlag = false;
 uVarsAOSim.simName  = 'GradedAbsorptionFocused';
 
 % FLuence:
-% uVarsAOSim.fluence.phiPath = './tmpSimRes/12-Feb-2023 18-10-3-ClearAgar.mat';
-% uVarsAOSim.fluence.phiPath = './tmpSimRes/GradedScattering/12-Feb-2023 17-26-55-Fluence-GradedScattering.mat';
-uVarsAOSim.fluence.phiPath = './tmpSimRes/Graded Absorption/14-Feb-2023 10-18-8-Fluence-GradedAbsorption.mat';
-
-uVarsAOSim.trEnvSize      = 15; %idxs
+uVarsAOSim.fluence.phiPath = './MuEffSimulation/Results/26-Feb-2023 22-28-37-GradedAbsorption-NewSet.mat';
+uVarsAOSim.trEnvSize       = 15; %idxs
 
 % VAOS:
 uVarsAOSim.vaos.loadVaos       = false;
 uVarsAOSim.vaos.vaosPath       = '';
-uVarsAOSim.vaos.usPath         = "Analysis - FocusedAOITransducer-1.25MHz";
+uVarsAOSim.vaos.usPath         = "Analysis - FocusedAOITransducer-1.25MHz.mat";
 % uVarsAOSim.vaos.usPath         = "Analysis - UnFocusedAOITransducer-1.25MHz";
-uVarsAOSim.vaos.usFocalDist    = 30; %[mm] distance of the US focus from illumination plane
+uVarsAOSim.vaos.usFocalDist    = 60; %[mm] distance of the US focus from illumination plane
 uVarsAOSim.vaos.N              = 251;
 uVarsAOSim.vaos.fUS            = 1.25e6;
 uVarsAOSim.vaos.pulseType      = 'measured';
@@ -94,7 +98,8 @@ uVarsAOSim.ml.loadMeas     = true;
 % uVarsAOSim.ml.measPath     = 'D:/MuEff/Uniform/GradedScatteringSet/UnFocused';
 % uVarsAOSim.ml.measPath     = 'D:/MuEff/GradedAbsorption/Focused/WithPDMS';
 % uVarsAOSim.ml.measPath     = 'D:/MuEff/GradedAbsorption/UnFocused/WithPDMS';
-uVarsAOSim.ml.measPath     = 'D:/MuEff/GradedAbsorption/Focused/WithAgar-SingleSet';
+% uVarsAOSim.ml.measPath     = 'D:/MuEff/GradedAbsorption/Focused/WithAgar-SingleSet';
+uVarsAOSim.ml.measPath     = './Measurements/MuEff/WithAgar-SingleSet';
 uVarsAOSim.ml.measNameTemp = "Phantom-%d";
 uVarsAOSim.ml.loadNew      = true;
 uVarsAOSim.ml.idxLow       = 1; 
@@ -102,6 +107,7 @@ uVarsAOSim.ml.idxHigh      = 236;
 uVarsAOSim.ml.phiHighToLow = true;
 uVarsAOSim.ml.c            = [];
 uVarsAOSim.ml.noiseIdxs    = 1:30;
+uVarsAOSim.ml.alignToSig   = true;
 
 % Graded Scattering
 % uVarsAOSim.muEffIdx.log.sim   = 1345:1950;
@@ -111,11 +117,11 @@ uVarsAOSim.muEffIdx.log.speckle = 1:20;
 % Graded Absorption
 uVarsAOSim.muEffLevels.sim     = [-4, -1];
 uVarsAOSim.muEffLevels.speckle = 1:20;
-uVarsAOSim.muEffLevels.meas    = [-2.4, -1];
+uVarsAOSim.muEffLevels.meas    = [-1.99, -0.4];
 
 aoSim.setVars(uVarsAOSim);
 aoSim.config();
-aoSim.extractMuEffFluence()
+aoSim.extractMuEffFluence();
 %%
 % clc
 close all
@@ -126,6 +132,7 @@ close all
 % aoSim.extractFluenceMuEff();
 % aoSim.analyseMeas();
 aoSim.compareMuEff();
+aoSim.displayMuEffComparison();
 aoSim.displayResults();
 aoSim.displayResultsForIndexing();
 aoSim.ml.displayResults
